@@ -1,0 +1,18 @@
+{
+  "component": "clickhouse",
+  "repo": "acceldata-io/ch-ui",
+  "branch": "nightly/ODP-3.2.3.7-2",
+  "pom_paths": [
+    "ch-ui-wrapper/pom.xml"
+  ],
+  "library_count": 0,
+  "libraries": {},
+  "version_properties": {
+    "jackson-bom.version": "2.18.6",
+    "logback.version": "1.5.37",
+    "slf4j.version": "2.0.18",
+    "snakeyaml.version": "2.0",
+    "spring-framework.version": "5.3.39",
+    "tomcat.version": "9.0.119"
+  }
+}

@@ -1,0 +1,18 @@
+# cve_agent session state (per-session conversation memory + usage)
+.cve_agent_session_*.json
+
+# per-component fix state (local run artifacts)
+cve_fix_state*.json
+
+# local credentials — NEVER commit
+jira.env
+.jira_credentials
+.env
+
+# python
+__pycache__/
+*.pyc
+
+# OS / IDE cruft
+.DS_Store
+.idea/
