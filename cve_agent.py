@@ -7,10 +7,22 @@ patches, building, transitioning Jira) stays in cve_analyser / cve_fixer /
 cve_reclassify — the model only reasons and decides. Writes are gated behind a
 human approval prompt, and token usage / cost is metered.
 
+Hybrid model routing: the run starts on a mid tier (Sonnet) for orchestration
+and normal fixes, uses a cheap tier (Haiku) when pinned for bulk triage, and
+auto-escalates (one-way) to a top tier (Opus) when a build/compile fails or the
+model emits an [ESCALATE] marker. Per-model token usage is metered so hybrid
+cost is accurate.
+
 Run:
     export ANTHROPIC_API_KEY=sk-ant-...
-    # optional overrides:
-    export CVE_AGENT_MODEL=claude-3-5-sonnet-latest      # your available model
+    # optional overrides (hybrid tiers):
+    export CVE_MODEL_TRIAGE=claude-haiku-4-5             # cheap bulk triage
+    export CVE_MODEL_ORCH=claude-sonnet-5               # orchestration + fixes
+    export CVE_MODEL_FIX=claude-opus-4-8                # hard remediation / escalate
+    export CVE_AGENT_TIER=orch                          # triage|orch|fix (start tier)
+    export CVE_AGENT_AUTO_ESCALATE=1                    # 0 = never escalate
+    # single-model mode (pins ALL tiers to one model):
+    export CVE_AGENT_MODEL=claude-3-5-sonnet-latest
     export CVE_AGENT_AUTOAPPROVE=0                        # 1 = skip the gate (careful)
     python3 cve_agent.py "Analyse the flink component and propose a plan"
     python3 cve_agent.py                                  # interactive
@@ -37,17 +49,64 @@ import cve_reclassify
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-MODEL = os.environ.get("CVE_AGENT_MODEL", "claude-3-5-sonnet-latest")
+# --- Hybrid model tiers -----------------------------------------------------
+# Route by task difficulty: a cheap model for bulk triage/extraction, a mid
+# model for orchestration + normal fixes, and a top model for hard remediation
+# / escalation. Setting the legacy CVE_AGENT_MODEL pins ALL tiers to one model
+# (single-model mode), preserving old behaviour.
+_LEGACY_MODEL = os.environ.get("CVE_AGENT_MODEL", "").strip()
+MODEL_TRIAGE = _LEGACY_MODEL or os.environ.get("CVE_MODEL_TRIAGE", "claude-haiku-4-5")
+MODEL_ORCH = _LEGACY_MODEL or os.environ.get("CVE_MODEL_ORCH", "claude-sonnet-5")
+MODEL_FIX = _LEGACY_MODEL or os.environ.get("CVE_MODEL_FIX", "claude-opus-4-8")
+TIER_MODELS = {"triage": MODEL_TRIAGE, "orch": MODEL_ORCH, "fix": MODEL_FIX}
+
+# Which tier a run starts on (default the orchestration/Sonnet tier).
+START_TIER = os.environ.get("CVE_AGENT_TIER", "orch").lower()
+if START_TIER not in TIER_MODELS:
+    START_TIER = "orch"
+# Auto-escalate to the FIX tier (Opus) when a build/compile fails or the model
+# emits an [ESCALATE] marker. One-way — a run never de-escalates.
+AUTO_ESCALATE = os.environ.get("CVE_AGENT_AUTO_ESCALATE", "1") not in ("", "0", "false", "False")
+
+# Primary model for display / session metadata; the actual per-call model may
+# escalate during a run.
+MODEL = TIER_MODELS[START_TIER]
+
 MAX_TOKENS = int(os.environ.get("CVE_AGENT_MAX_TOKENS", "4096"))
 MAX_ITERS = int(os.environ.get("CVE_AGENT_MAX_ITERS", "40"))
 AUTO_APPROVE = os.environ.get("CVE_AGENT_AUTOAPPROVE", "") not in ("", "0", "false", "False")
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# Cost estimate rates (USD per 1M tokens) — override per your model / pricing.
-RATE_IN = float(os.environ.get("CVE_AGENT_RATE_IN", "3.0"))     # uncached input
-RATE_OUT = float(os.environ.get("CVE_AGENT_RATE_OUT", "15.0"))  # output
+# Cost estimate rates (USD per 1M tokens). Per-model defaults below; the legacy
+# CVE_AGENT_RATE_* env vars act as a global fallback for unknown models.
+RATE_IN = float(os.environ.get("CVE_AGENT_RATE_IN", "3.0"))
+RATE_OUT = float(os.environ.get("CVE_AGENT_RATE_OUT", "15.0"))
 RATE_CACHE_WRITE = float(os.environ.get("CVE_AGENT_RATE_CACHE_W", "3.75"))
 RATE_CACHE_READ = float(os.environ.get("CVE_AGENT_RATE_CACHE_R", "0.30"))
+
+# (input, output, cache-write, cache-read) USD per 1M tokens — July 2026 list.
+_DEFAULT_RATES = {
+    "claude-haiku-4-5": (1.0, 5.0, 1.25, 0.10),
+    "claude-sonnet-5": (3.0, 15.0, 3.75, 0.30),
+    "claude-opus-4-8": (5.0, 25.0, 6.25, 0.50),
+    "claude-fable-5": (10.0, 50.0, 12.5, 1.0),
+}
+
+
+def _rates_for(model: str):
+    """Return (in, out, cache_w, cache_r) rates for a model name."""
+    if model in _DEFAULT_RATES:
+        return _DEFAULT_RATES[model]
+    m = (model or "").lower()
+    if "haiku" in m:
+        return _DEFAULT_RATES["claude-haiku-4-5"]
+    if "fable" in m or "mythos" in m:
+        return _DEFAULT_RATES["claude-fable-5"]
+    if "opus" in m:
+        return _DEFAULT_RATES["claude-opus-4-8"]
+    if "sonnet" in m:
+        return _DEFAULT_RATES["claude-sonnet-5"]
+    return (RATE_IN, RATE_OUT, RATE_CACHE_WRITE, RATE_CACHE_READ)
 
 MAX_TOOL_OUTPUT = 16000  # chars returned to the model from a tool
 
@@ -70,6 +129,16 @@ Operating rules:
 - Read/analyse first. Use query_cve and check_repo_version to establish facts
   (affected library, current version in the branch, whether a fixed version
   exists) BEFORE deciding anything.
+- For every CVE you intend to FIX, call analyse_upstream FIRST to get pre-fix
+  insight: (a) does upstream actually have a fix and what fixed version(s)
+  exist, (b) is the remediation a drop-in VERSION BUMP or does it LIKELY need
+  CODE CHANGES (a patch/minor bump is usually drop-in; a major-version jump
+  usually means API breaks + real code work and often an R9 JDK/runtime issue),
+  and (c) what version the upstream project's main/master branch currently
+  ships. Pass current_version (from check_repo_version / the ticket) plus the
+  upstream OSS repo+path (e.g. apache/hadoop + hadoop-project/pom.xml). Report
+  this verdict to the human before applying a fix — if there is NO upstream fix,
+  do not invent a bump: cherry-pick or route to EXCEPTION.
 - Classify each CVE as: FIX (bump a version), EXCEPTION (cannot bump / not
   fixable here), CLOSE (already fixed upstream/platform), or FALSE POSITIVE /
   NOT APPLICABLE. Justify exceptions and closures with concrete reasons.
@@ -125,13 +194,20 @@ Onboarding a NEW component / fixing code (this is how you gain parity):
 client = None  # instantiated in main() after the API key check
 
 # running usage totals
-USAGE = {"in": 0, "out": 0, "cache_w": 0, "cache_r": 0}
+# Token usage is tracked per model so hybrid runs can be costed accurately.
+# Shape: {model_name: {"in", "out", "cache_w", "cache_r"}}.
+USAGE: Dict[str, Dict[str, int]] = {}
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 def _github_token() -> str:
+    # Priority: GITHUB_TOKEN / GH_TOKEN env vars (so a .env works), then the
+    # stored token via `git credential fill`.
+    tok = (os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or "").strip()
+    if tok:
+        return tok
     p = subprocess.run(
         "printf 'protocol=https\\nhost=github.com\\n\\n' | git credential fill",
         shell=True, capture_output=True, text=True)
@@ -337,6 +413,220 @@ def tool_check_repo_version(args: Dict) -> str:
                              "matches": matches[:80]}, indent=2))
 
 
+def _ver_tuple(v: str):
+    """Best-effort numeric (major, minor, patch) from a version string.
+    Handles tails like '9.4.57.v20241219', '2.14.3', '1.5.4'."""
+    if not v:
+        return None
+    nums = re.findall(r"\d+", str(v))
+    if not nums:
+        return None
+    return tuple(int(x) for x in nums[:3])
+
+
+def _bump_kind(current: str, fixed: str) -> str:
+    """Classify current->fixed as patch/minor/major (or none/unknown).
+    A patch/minor bump is usually drop-in; a major bump usually implies API
+    breaks and real code changes in the consuming component."""
+    a, b = _ver_tuple(current), _ver_tuple(fixed)
+    if not a or not b:
+        return "unknown"
+    a = a + (0,) * (3 - len(a))
+    b = b + (0,) * (3 - len(b))
+    if b <= a:
+        return "none"          # already at/above the fixed version
+    if b[0] != a[0]:
+        return "major"
+    if b[1] != a[1]:
+        return "minor"
+    return "patch"
+
+
+def _pick_target(current: str, fixed_list: List[str]) -> str:
+    """Smallest fixed version strictly greater than current (else smallest)."""
+    cand = [f for f in fixed_list if f]
+    if not cand:
+        return ""
+    cur = _ver_tuple(current)
+    keyed = sorted(cand, key=lambda f: (_ver_tuple(f) or (0,)))
+    if cur:
+        cur = cur + (0,) * (3 - len(cur))
+        for f in keyed:
+            ft = _ver_tuple(f)
+            if ft and (ft + (0,) * (3 - len(ft))) > cur:
+                return f
+    return keyed[0]
+
+
+def _osv_lookup(vuln_id: str) -> Dict:
+    """Fetch a vulnerability record from OSV.dev (free, no auth). OSV indexes
+    CVE / GHSA ids and aggregates GitHub Security Advisories, so it tells us
+    whether upstream has a fix and the fixed version(s) per ecosystem."""
+    try:
+        r = ca.SESSION.get(
+            f"https://api.osv.dev/v1/vulns/{urllib.parse.quote(vuln_id)}",
+            timeout=30)
+    except Exception as e:
+        return {"error": f"OSV request failed: {e}"}
+    if r.status_code != 200:
+        return {"error": f"OSV HTTP {r.status_code} for {vuln_id}",
+                "hint": r.text[:200]}
+    return r.json()
+
+
+def _collect_fixes(rec: Dict):
+    """Split an OSV record's 'fixed' events into released ecosystem versions
+    (usable as a bump target) vs GIT commit fixes (a source patch, not a
+    released version). Also return affected packages and introduced points."""
+    semver, git, pkgs, intro = [], [], [], []
+    for aff in rec.get("affected", []):
+        pkg = aff.get("package", {})
+        if pkg:
+            pkgs.append({"ecosystem": pkg.get("ecosystem", ""),
+                         "name": pkg.get("name", "")})
+        for rng in aff.get("ranges", []):
+            rtype = rng.get("type", "")
+            for ev in rng.get("events", []):
+                if ev.get("fixed"):
+                    (git if rtype == "GIT" else semver).append(ev["fixed"])
+                if ev.get("introduced") and ev["introduced"] != "0":
+                    intro.append(ev["introduced"])
+    return semver, git, pkgs, intro
+
+
+def _fetch_upstream_version(repo: str, path: str, pattern: str,
+                            branch: str = "") -> Dict:
+    """Read a build file from the UPSTREAM (open-source) repo's default branch
+    and grep it, so we can report what version upstream currently ships. Tries
+    main then master when no branch is given."""
+    token = _github_token()
+    hdrs = {"Authorization": f"token {token}"} if token else {}
+    branches = [branch] if branch else ["main", "master"]
+    for b in branches:
+        raw = f"https://raw.githubusercontent.com/{repo}/{b}/{path}"
+        try:
+            r = ca.SESSION.get(raw, headers=hdrs, timeout=30)
+        except Exception as e:
+            return {"error": f"request failed: {e}", "url": raw}
+        if r.status_code == 200:
+            rx = re.compile(pattern or "version", re.IGNORECASE)
+            matches = [{"line": i, "text": ln.strip()}
+                       for i, ln in enumerate(r.text.splitlines(), 1)
+                       if rx.search(ln)]
+            return {"repo": repo, "branch": b, "path": path,
+                    "pattern": pattern or "version",
+                    "match_count": len(matches), "matches": matches[:60]}
+    return {"error": f"could not read {path} on {repo} "
+            f"(tried branches: {', '.join(branches)})"}
+
+
+def tool_analyse_upstream(args: Dict) -> str:
+    """Pre-fix insight for a fixable CVE: does upstream have a fix, what fixed
+    version(s) exist, is remediation a drop-in version bump or likely code
+    changes, and what version does upstream main/master currently ship."""
+    cve = args.get("cve_id", "")
+    current = args.get("current_version", "")
+    result: Dict = {"cve": cve, "current_version": current}
+
+    # 1) Upstream fix availability + fixed versions (OSV.dev).
+    osv = _osv_lookup(cve) if cve else {"error": "no cve_id provided"}
+    fixed_versions: List[str] = []
+    fix_commits: List[str] = []
+    affected_pkgs: List[Dict] = []
+    if "error" in osv:
+        result["osv"] = osv
+    else:
+        fixed_versions, fix_commits, affected_pkgs, intro = _collect_fixes(osv)
+        # The CVE-level record often carries only GIT ranges; the released
+        # ecosystem versions live in the GHSA advisory. Fall back to aliases.
+        if not fixed_versions:
+            for alias in osv.get("aliases", []):
+                if not alias.startswith("GHSA"):
+                    continue
+                g = _osv_lookup(alias)
+                if "error" not in g:
+                    s2, c2, p2, _ = _collect_fixes(g)
+                    fixed_versions += s2
+                    fix_commits += c2
+                    affected_pkgs += p2
+                if fixed_versions:
+                    break
+        fixed_versions = sorted(set(fixed_versions),
+                                key=lambda f: (_ver_tuple(f) or (0,)))
+        fix_commits = list(dict.fromkeys(fix_commits))
+        seen = set()
+        uniq_pkgs = []
+        for p in affected_pkgs:
+            key = (p.get("ecosystem"), p.get("name"))
+            if key not in seen:
+                seen.add(key)
+                uniq_pkgs.append(p)
+        result["osv"] = {
+            "id": osv.get("id", cve),
+            "summary": (osv.get("summary") or "")[:300],
+            "aliases": osv.get("aliases", [])[:8],
+            "affected_packages": uniq_pkgs[:12],
+            "fixed_versions": fixed_versions,
+            "fix_commits": fix_commits[:5],
+            "introduced": sorted(set(intro))[:8],
+            "references": [ref.get("url") for ref in osv.get("references", [])
+                           if ref.get("type") in ("FIX", "ADVISORY", "WEB")][:6],
+        }
+
+    result["fix_available_upstream"] = bool(fixed_versions or fix_commits)
+    target = _pick_target(current, fixed_versions)
+    result["recommended_target_version"] = target
+
+    # 2) Bump-vs-code-change assessment.
+    if not fixed_versions and fix_commits:
+        verdict = "UPSTREAM_FIX_IS_SOURCE_PATCH"
+        reason = ("OSV lists fix commit(s) but no released ecosystem version for "
+                  "this package. The fix is a source patch — identify the release "
+                  "that contains it, or cherry-pick the commit(s), rather than a "
+                  "plain version bump.")
+        kind = "none"
+    elif not fixed_versions:
+        verdict = "NO_UPSTREAM_FIX"
+        reason = ("OSV lists no fixed version or fix commit. There may be no "
+                  "upstream fix yet — route to EXCEPTION (no upstream fix) unless "
+                  "you can confirm a patch elsewhere.")
+        kind = "none"
+    else:
+        kind = _bump_kind(current, target) if current else "unknown"
+        if kind == "none":
+            verdict = "ALREADY_FIXED"
+            reason = f"Current {current} >= fixed {target}; likely already patched."
+        elif kind in ("patch", "minor"):
+            verdict = "LIKELY_VERSION_BUMP"
+            reason = (f"{current or '?'} -> {target} is a {kind} bump; usually "
+                      "a drop-in dependency version change (verify build).")
+        elif kind == "major":
+            verdict = "LIKELY_CODE_CHANGES"
+            reason = (f"{current or '?'} -> {target} crosses a major version; "
+                      "expect API breaks / code changes. Check R9 "
+                      "(JDK/runtime) compatibility before bumping.")
+        else:
+            verdict = "REVIEW"
+            reason = ("Fixed version exists but current version unknown — pass "
+                      "current_version (or use check_repo_version) to classify.")
+    result["bump_kind"] = kind
+    result["verdict"] = verdict
+    result["reason"] = reason
+
+    # 3) What version upstream main/master currently ships (optional).
+    up_repo = args.get("upstream_repo")
+    up_path = args.get("upstream_path")
+    if up_repo and up_path:
+        result["upstream_main"] = _fetch_upstream_version(
+            up_repo, up_path, args.get("pattern", ""),
+            args.get("upstream_branch", ""))
+    else:
+        result["upstream_main"] = {"skipped": "pass upstream_repo + upstream_path "
+                                   "(+ optional pattern/upstream_branch) to read "
+                                   "the version on upstream's default branch"}
+    return _clip(json.dumps(result, indent=2))
+
+
 def _run_script(env_extra: Dict, argv: List[str]) -> str:
     env = dict(os.environ)
     env.update({k: str(v) for k, v in env_extra.items()})
@@ -501,6 +791,7 @@ TOOLS_IMPL = {
     "write_local_file": tool_write_local_file,
     "run_shell": tool_run_shell,
     "check_repo_version": tool_check_repo_version,
+    "analyse_upstream": tool_analyse_upstream,
     "analyse_component": tool_analyse_component,
     "reclassify_cve": tool_reclassify_cve,
     "apply_component": tool_apply_component,
@@ -549,6 +840,32 @@ TOOLS = [
          "path": {"type": "string", "description": "file path in the repo"},
          "pattern": {"type": "string", "description": "regex to grep (default 'version')"}},
          "required": ["repo", "branch", "path"]}},
+    {"name": "analyse_upstream",
+     "description": "Pre-fix insight for a fixable CVE (read-only). Answers: does "
+                    "upstream have a fix and what fixed version(s) exist (via "
+                    "OSV.dev, which aggregates GitHub Security Advisories); is the "
+                    "remediation a drop-in VERSION BUMP or LIKELY CODE CHANGES "
+                    "(semver: patch/minor => drop-in, major => API breaks); and what "
+                    "version does the upstream project's main/master branch currently "
+                    "ship. Call this during triage BEFORE proposing a fix. Pass "
+                    "current_version (the version pinned in our branch — get it from "
+                    "check_repo_version or the Jira ticket) so the bump can be "
+                    "classified, and pass upstream_repo + upstream_path (e.g. "
+                    "apache/hadoop + hadoop-project/pom.xml) to read upstream's "
+                    "current version.",
+     "input_schema": {"type": "object", "properties": {
+         "cve_id": {"type": "string"},
+         "current_version": {"type": "string", "description": "version pinned in our "
+                             "branch, e.g. 9.4.54 — enables the bump classification"},
+         "upstream_repo": {"type": "string", "description": "upstream OSS repo, e.g. "
+                           "apache/hadoop or eclipse/jetty.project"},
+         "upstream_path": {"type": "string", "description": "build-file path in the "
+                           "upstream repo, e.g. pom.xml / build.gradle"},
+         "upstream_branch": {"type": "string", "description": "optional; defaults to "
+                             "trying 'main' then 'master'"},
+         "pattern": {"type": "string", "description": "regex to grep in the upstream "
+                     "build file (default 'version')"}},
+         "required": ["cve_id"]}},
     {"name": "analyse_component",
      "description": "Dry-run cve_fixer for a profile: proposes fix/exception/close "
                     "routing WITHOUT writing to Jira/GitHub. Read-only proposal.",
@@ -633,17 +950,35 @@ TOOLS = [
 # ---------------------------------------------------------------------------
 # Agent loop
 # ---------------------------------------------------------------------------
-def _account_usage(u) -> None:
-    USAGE["in"] += getattr(u, "input_tokens", 0) or 0
-    USAGE["out"] += getattr(u, "output_tokens", 0) or 0
-    USAGE["cache_w"] += getattr(u, "cache_creation_input_tokens", 0) or 0
-    USAGE["cache_r"] += getattr(u, "cache_read_input_tokens", 0) or 0
+def _usage_for(model: str) -> Dict[str, int]:
+    return USAGE.setdefault(
+        model, {"in": 0, "out": 0, "cache_w": 0, "cache_r": 0})
+
+
+def _account_usage(u, model: str) -> None:
+    d = _usage_for(model)
+    d["in"] += getattr(u, "input_tokens", 0) or 0
+    d["out"] += getattr(u, "output_tokens", 0) or 0
+    d["cache_w"] += getattr(u, "cache_creation_input_tokens", 0) or 0
+    d["cache_r"] += getattr(u, "cache_read_input_tokens", 0) or 0
+
+
+def _usage_totals() -> Dict[str, int]:
+    t = {"in": 0, "out": 0, "cache_w": 0, "cache_r": 0}
+    for d in USAGE.values():
+        for k in t:
+            t[k] += d.get(k, 0)
+    return t
 
 
 def _cost() -> float:
-    return (USAGE["in"] / 1e6 * RATE_IN + USAGE["out"] / 1e6 * RATE_OUT
-            + USAGE["cache_w"] / 1e6 * RATE_CACHE_WRITE
-            + USAGE["cache_r"] / 1e6 * RATE_CACHE_READ)
+    total = 0.0
+    for model, d in USAGE.items():
+        ri, ro, rcw, rcr = _rates_for(model)
+        total += (d.get("in", 0) / 1e6 * ri + d.get("out", 0) / 1e6 * ro
+                  + d.get("cache_w", 0) / 1e6 * rcw
+                  + d.get("cache_r", 0) / 1e6 * rcr)
+    return total
 
 
 # --- cross-invocation session persistence -------------------------------
@@ -714,8 +1049,17 @@ def load_session() -> List[Dict]:
     if os.path.exists(SESSION_PATH):
         try:
             d = json.load(open(SESSION_PATH))
-            for k in USAGE:
-                USAGE[k] = d.get("usage", {}).get(k, 0)
+            raw = d.get("usage", {}) or {}
+            USAGE.clear()
+            # Old sessions stored a single flat usage dict; migrate it under the
+            # session's primary model so historical cost still totals correctly.
+            if raw and "in" in raw:
+                USAGE[d.get("model", MODEL)] = {
+                    "in": raw.get("in", 0), "out": raw.get("out", 0),
+                    "cache_w": raw.get("cache_w", 0),
+                    "cache_r": raw.get("cache_r", 0)}
+            else:
+                USAGE.update(raw)
             return _sanitize_history(d.get("messages", []))
         except Exception as e:
             print(f"[warn] could not load session: {e}")
@@ -727,8 +1071,8 @@ def save_session(messages: List[Dict]) -> None:
         clean = _sanitize_history(messages)
         tmp = SESSION_PATH + ".tmp"
         with open(tmp, "w") as fh:
-            json.dump({"messages": clean, "usage": USAGE, "model": MODEL},
-                      fh, indent=1)
+            json.dump({"messages": clean, "usage": USAGE, "model": MODEL,
+                       "tier_models": TIER_MODELS}, fh, indent=1)
         os.replace(tmp, SESSION_PATH)   # atomic: never leave a half-written file
     except Exception as e:
         print(f"[warn] could not save session: {e}")
@@ -747,6 +1091,27 @@ def _content_to_dicts(content) -> List[Dict]:
     return out
 
 
+# Signatures in a tool result that mean a build/compile failed and the run
+# should escalate to the FIX (Opus) tier for harder reasoning.
+_ESCALATE_RE = re.compile(
+    r"BUILD FAILURE|BUILD FAILED|COMPILATION ERROR|cannot find symbol|"
+    r"FAILURE: Build failed|Traceback \(most recent|package .* does not exist|"
+    r"incompatible types",
+    re.I)
+
+
+def _should_escalate(assistant_content, tool_results) -> bool:
+    """Escalate if the model asks (emits [ESCALATE]) or a build/compile broke."""
+    for b in assistant_content:
+        if getattr(b, "type", None) == "text" and "[ESCALATE]" in (b.text or ""):
+            return True
+    for r in tool_results:
+        c = r.get("content", "")
+        if isinstance(c, str) and _ESCALATE_RE.search(c):
+            return True
+    return False
+
+
 def run_agent(goal: str, messages: List[Dict]) -> List[Dict]:
     # repair any dangling tool_use left by a prior run before adding the new turn
     messages[:] = _sanitize_history(messages)
@@ -761,10 +1126,16 @@ def run_agent(goal: str, messages: List[Dict]) -> List[Dict]:
     tools = list(TOOLS)
     tools[-1] = dict(tools[-1]); tools[-1]["cache_control"] = {"type": "ephemeral"}
 
+    # Start on the configured tier; escalate (one-way) to the FIX tier on demand.
+    current_model = TIER_MODELS[START_TIER]
+    print(f"[hybrid] triage={MODEL_TRIAGE}  orch={MODEL_ORCH}  fix={MODEL_FIX}  "
+          f"| starting tier={START_TIER} ({current_model})  "
+          f"auto_escalate={'on' if AUTO_ESCALATE else 'off'}")
+
     for step in range(1, MAX_ITERS + 1):
         try:
             resp = client.messages.create(
-                model=MODEL, max_tokens=MAX_TOKENS, system=system,
+                model=current_model, max_tokens=MAX_TOKENS, system=system,
                 tools=tools, messages=messages,
                 extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"})
         except Exception as e:
@@ -772,13 +1143,13 @@ def run_agent(goal: str, messages: List[Dict]) -> List[Dict]:
             print(f"\n[warn] caching call failed ({e}); retrying without caching")
             try:
                 resp = client.messages.create(
-                    model=MODEL, max_tokens=MAX_TOKENS, system=SYSTEM_PROMPT,
-                    tools=TOOLS, messages=messages)
+                    model=current_model, max_tokens=MAX_TOKENS,
+                    system=SYSTEM_PROMPT, tools=TOOLS, messages=messages)
             except Exception as e2:
                 print(f"\n[API ERROR] {e2}")
                 save_session(messages)
                 return messages
-        _account_usage(resp.usage)
+        _account_usage(resp.usage, current_model)
 
         for block in resp.content:
             if block.type == "text" and block.text.strip():
@@ -796,6 +1167,14 @@ def run_agent(goal: str, messages: List[Dict]) -> List[Dict]:
             if resp.stop_reason == "max_tokens":
                 print("\n[warn] response hit max_tokens; consider raising "
                       "MAX_TOKENS or narrowing the request")
+            # allow a text-only [ESCALATE] to bump the tier before we stop
+            if (AUTO_ESCALATE and current_model != MODEL_FIX
+                    and _should_escalate(resp.content, [])):
+                current_model = MODEL_FIX
+                print(f"\n[hybrid] escalating to FIX tier ({MODEL_FIX})")
+                messages.append({"role": "user", "content":
+                                 "Continue with the higher-capability model."})
+                continue
             break
 
         results = []
@@ -810,23 +1189,36 @@ def run_agent(goal: str, messages: List[Dict]) -> List[Dict]:
                             "content": out})
         messages.append({"role": "user", "content": results})
         save_session(messages)   # checkpoint after each tool round
-        print(f"  [usage so far] in={USAGE['in']} out={USAGE['out']} "
-              f"cache_r={USAGE['cache_r']} cache_w={USAGE['cache_w']} "
+
+        # One-way escalation to the top model when work gets hard.
+        if (AUTO_ESCALATE and current_model != MODEL_FIX
+                and _should_escalate(resp.content, results)):
+            current_model = MODEL_FIX
+            print(f"\n[hybrid] escalating to FIX tier ({MODEL_FIX}) "
+                  f"(build/compile failure or [ESCALATE] requested)")
+
+        t = _usage_totals()
+        print(f"  [usage so far] model={current_model} in={t['in']} "
+              f"out={t['out']} cache_r={t['cache_r']} cache_w={t['cache_w']} "
               f"~${_cost():.3f}")
 
     save_session(messages)
+    t = _usage_totals()
     print("\n" + "=" * 78)
     print(f"SESSION '{SESSION_NAME}'  ({len(messages)} msgs)  file={SESSION_PATH}")
-    print(f"TOKENS (cumulative)  input={USAGE['in']}  output={USAGE['out']}  "
-          f"cache_read={USAGE['cache_r']}  cache_write={USAGE['cache_w']}")
-    print(f"ESTIMATED COST (cumulative)  ~${_cost():.4f}  (model={MODEL})")
+    print(f"TOKENS (cumulative)  input={t['in']}  output={t['out']}  "
+          f"cache_read={t['cache_r']}  cache_write={t['cache_w']}")
+    for model, d in USAGE.items():
+        print(f"  - {model}: in={d['in']} out={d['out']} "
+              f"cache_r={d['cache_r']} cache_w={d['cache_w']}")
+    print(f"ESTIMATED COST (cumulative)  ~${_cost():.4f}  "
+          f"(hybrid: {MODEL_TRIAGE} / {MODEL_ORCH} / {MODEL_FIX})")
     print("=" * 78)
     return messages
 
 
 def _reset_session() -> List[Dict]:
-    for k in USAGE:
-        USAGE[k] = 0
+    USAGE.clear()
     if os.path.exists(SESSION_PATH):
         os.remove(SESSION_PATH)
     print(f"[session '{SESSION_NAME}' reset]")

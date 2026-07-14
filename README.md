@@ -12,7 +12,7 @@ tools, scoped strictly per release, with a human approval gate on every write.
 
 | File | Purpose |
 |------|---------|
-| `cve_agent.py` | Anthropic Messages API agent; exposes Jira/GitHub/shell tools with session persistence. |
+| `cve_agent.py` | Anthropic Messages API agent; exposes Jira/GitHub/OSV/shell tools with hybrid model routing, pre-fix upstream analysis, and session persistence. |
 | `cve_analyser.py` | Jira API layer — query tickets, transition status, set exception reason / transition details. |
 | `cve_fixer.py` | Maven-based fixer — clone/patch pom, build, commit, push, open PR. Includes the rule engine (exception / close / shaded-bundle / environment R9). |
 | `cve_profiles.py` | Per-component profiles (repo, branch, build cmd, JDK, rules) + `profile_env()`. |
@@ -30,8 +30,9 @@ cp .env.example .env && $EDITOR .env && source .env   # fill in real values
 
 Credentials are **never** hardcoded. `cve_analyser.py` reads Jira credentials
 from `CVE_JIRA_EMAIL` / `CVE_JIRA_API_TOKEN` (or a git-ignored
-`~/.config/cve_fix/jira.env`). GitHub operations use your local git credential
-helper. `cve_agent.py` needs `ANTHROPIC_API_KEY`.
+`~/.config/cve_fix/jira.env`). GitHub operations use `GITHUB_TOKEN` / `GH_TOKEN`
+if set, otherwise your local git credential helper. `cve_agent.py` needs
+`ANTHROPIC_API_KEY`.
 
 ## Usage
 
@@ -40,7 +41,55 @@ helper. `cve_agent.py` needs `ANTHROPIC_API_KEY`.
 CVE_DRY_RUN=1 CVE_PROFILE=spark2 python3 cve_fixer.py
 
 # Agent (natural-language driver; every write is approved by a human)
-CVE_AGENT_MODEL=claude-opus-4-8 python3 cve_agent.py "Address sqoop CVEs for 3.2.3.6"
+python3 cve_agent.py "Address sqoop CVEs for 3.2.3.6"
+```
+
+### Hybrid model routing
+
+`cve_agent.py` routes work across three model tiers to balance cost and
+capability, and meters token usage per model so the cost estimate is accurate:
+
+| Tier | Env var | Default | Used for |
+|------|---------|---------|----------|
+| triage | `CVE_MODEL_TRIAGE` | `claude-haiku-4-5` | cheap bulk triage / extraction |
+| orch | `CVE_MODEL_ORCH` | `claude-sonnet-5` | orchestration + normal fixes (default start) |
+| fix | `CVE_MODEL_FIX` | `claude-opus-4-8` | hard remediation / escalation target |
+
+The run starts on `CVE_AGENT_TIER` (default `orch`) and **auto-escalates
+one-way** to the FIX tier when a build/compile fails or the model emits an
+`[ESCALATE]` marker (disable with `CVE_AGENT_AUTO_ESCALATE=0`). Pin everything
+to a single model with `CVE_AGENT_MODEL=<model>` (single-model mode).
+
+```bash
+# Start cheap for a big triage pass, escalate to Opus automatically on hard cases
+CVE_AGENT_TIER=triage python3 cve_agent.py "Triage all trino CVEs for 3.2.3.6"
+
+# Pin one model (old behaviour)
+CVE_AGENT_MODEL=claude-opus-4-8 python3 cve_agent.py "Fix sqoop jetty CVE"
+```
+
+### Pre-fix upstream analysis
+
+Before proposing a fix, the agent calls the `analyse_upstream` tool to gather
+insight so you know what you're getting into:
+
+- **Does upstream have a fix?** Looks up the CVE on [OSV.dev](https://osv.dev)
+  (which aggregates GitHub Security Advisories) and reports the fixed ecosystem
+  version(s) — falling back to the `GHSA-*` alias record for the released Maven/
+  npm/PyPI version when the CVE record only carries git commits.
+- **Version bump or code changes?** Compares the version pinned in our branch
+  against the recommended fixed version: a **patch/minor** bump is usually a
+  drop-in dependency change (`LIKELY_VERSION_BUMP`), while a **major** jump
+  usually means API breaks and real code work (`LIKELY_CODE_CHANGES`, and often
+  an R9 JDK/runtime concern). If there's no released fix it flags
+  `UPSTREAM_FIX_IS_SOURCE_PATCH` (cherry-pick) or `NO_UPSTREAM_FIX` (exception).
+- **What does upstream ship now?** Optionally reads the upstream OSS repo's
+  `main`/`master` build file (e.g. `apache/hadoop` + `hadoop-project/pom.xml`)
+  and reports the version currently on the default branch.
+
+```bash
+python3 cve_agent.py "For CVE-2022-42003 in hadoop 3.2.3.6, analyse upstream and \
+tell me if it's a version bump or code change before fixing"
 ```
 
 See `USAGE_GUIDE.md` for the full workflow and `docs/` for the design write-up.

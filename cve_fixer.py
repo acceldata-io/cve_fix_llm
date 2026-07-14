@@ -451,7 +451,14 @@ def record_fix(plan: Dict) -> None:
 
 
 def github_token() -> Optional[str]:
-    """Read the stored GitHub token via `git credential fill`."""
+    """Return a GitHub token.
+
+    Priority: GITHUB_TOKEN / GH_TOKEN env vars (so a .env works), then the
+    stored token via `git credential fill`.
+    """
+    tok = (os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or "").strip()
+    if tok:
+        return tok
     p = subprocess.run(
         "printf 'protocol=https\\nhost=github.com\\n\\n' | git credential fill",
         shell=True, capture_output=True, text=True)
