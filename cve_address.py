@@ -87,10 +87,13 @@ def resolve_component(name: str) -> Tuple[Optional[str], List[str]]:
     return None, sug
 
 
-def component_meta(name: str) -> Dict:
+def component_meta(name: str, release: str = "") -> Dict:
     """Profile fields when available; otherwise sensible ODP defaults."""
+    rel = (release or os.environ.get("CVE_ADDRESS_RELEASE")
+           or os.environ.get("CVE_RELEASE") or "")
+    jdk = cp.jdk_major_for_release(rel) or 8
     if name in cp.PROFILES:
-        p = cp.get_profile(name)
+        p = cp.get_profile(name, release=rel or None)
         return {
             "name": name,
             "repo": p.get("repo") or f"sehajsandhu/{name}",
@@ -101,6 +104,7 @@ def component_meta(name: str) -> Dict:
             "build_tool": p.get("build_tool", "maven"),
             "java_home": p.get("java_home"),
             "jdk_version": p.get("jdk_version"),
+            "effective_release": p.get("effective_release", rel),
             "has_profile": True,
         }
     return {
@@ -113,8 +117,9 @@ def component_meta(name: str) -> Dict:
                       "-Dcheckstyle.skip=true -Drat.skip=true "
                       "-Dmaven.javadoc.skip=true clean install"),
         "build_tool": "maven",
-        "java_home": None,
-        "jdk_version": 8,
+        "java_home": cp.resolve_java_home(jdk),
+        "jdk_version": jdk,
+        "effective_release": rel,
         "has_profile": False,
     }
 
@@ -132,11 +137,13 @@ def build_address_goal(
     reviewers: Optional[List[str]] = None,
 ) -> str:
     """Build the natural-language goal the agent executes for --address."""
-    meta = component_meta(component)
+    meta = component_meta(component, release=release)
     reviewer = pick_reviewer(reviewers)
     reviewer_list = ", ".join(reviewers or DEFAULT_REVIEWERS)
     build_hint = meta["build_cmd"] or "(discover build command from the repo)"
     tool_hint = meta["build_tool"]
+    jdk = meta.get("jdk_version")
+    jh = meta.get("java_home") or "(set CVE_JAVA_HOME_8 / CVE_JAVA_HOME_11)"
 
     return f"""Address ALL To-Do OSV CVEs for component '{component}' on release base {release}.
 
@@ -152,6 +159,7 @@ REPO / BRANCHES:
 - open PRs against = {pr_base}
 - build_tool = {tool_hint}
 - build_cmd = {build_hint}
+- ODP JDK policy: release {release} → JDK {jdk} (JAVA_HOME={jh})
 - has_cve_profile = {meta['has_profile']}
 
 WORKFLOW:
@@ -249,7 +257,11 @@ def parse_address_args(argv: List[str]) -> argparse.Namespace:
 
 
 def run_address_cli(argv: List[str], run_agent_cb) -> int:
-    """Entry used by cve_agent.main. run_agent_cb(goal) starts the agent."""
+    """Entry used by cve_agent.main.
+
+    ``run_agent_cb(goal, cost_tracker=None)`` starts the agent; when a tracker
+    is passed, each API turn is attributed to a workflow phase.
+    """
     args = parse_address_args(argv)
     if not args.component:
         print_component_list()
@@ -264,14 +276,27 @@ def run_address_cli(argv: List[str], run_agent_cb) -> int:
     if args.reviewers.strip():
         reviewers = [r.strip() for r in args.reviewers.split(",") if r.strip()]
 
-    meta = component_meta(name)
-    print(f"[address] component={name}  release={args.release}")
+    meta = component_meta(name, release=args.release)
+    jdk = meta.get("jdk_version")
+    print(f"[address] component={name}  release={args.release}  jdk={jdk}")
     print(f"          checkout={args.branch}  pr_base={args.pr_base}")
     print(f"          repo={meta['repo']}  git={meta['git_url']}")
     print(f"          profile={'yes' if meta['has_profile'] else 'no (inferred)'}")
 
+    import cve_cost_tracker as ct
+    # rates_for is injected by cve_agent when available
+    rates_for = getattr(run_address_cli, "_rates_for", None)
+    tracker = ct.ComponentCostTracker(
+        component=name, release=args.release, rates_for=rates_for)
+
     goal = build_address_goal(
         name, release=args.release, checkout_branch=args.branch,
         pr_base=args.pr_base, reviewers=reviewers)
-    run_agent_cb(goal)
+    try:
+        run_agent_cb(goal, cost_tracker=tracker)
+    finally:
+        record = tracker.to_run_record()
+        path = ct.save_run(record)
+        ct.print_component_cost(record)
+        print(f"\nCost ledger: {path}")
     return 0

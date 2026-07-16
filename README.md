@@ -13,7 +13,7 @@ tools, scoped strictly per release, with a human approval gate on every write.
 | File | Purpose |
 |------|---------|
 | `cve_agent.py` | Anthropic Messages API agent; exposes Jira/GitHub/OSV/shell tools with hybrid model routing, pre-fix upstream analysis, and session persistence. Also: `--full-analysis <release>`. |
-| `cve_address.py` | Packaged `--address <component>` workflow (triage → exception/fix → PR → close Jira) with component name resolution + suggestions. |
+| `cve_cost_tracker.py` | Per-component / per-phase token & cost ledger (`reports/component_costs.json`); shown after `--address` and via `--cost-report`. |
 | `cve_analyser.py` | Jira API layer — query tickets, transition status, set exception reason / transition details. |
 | `cve_fixer.py` | Maven-based fixer — clone/patch pom, build, commit, push, open PR. Includes the rule engine (exception / close / shaded-bundle / environment R9). |
 | `cve_profiles.py` | Per-component profiles (repo, branch, build cmd, JDK, rules) + `profile_env()`. |
@@ -38,6 +38,9 @@ cve_fix_llm/                 # this repo (same on laptop or 10.101.11.82)
 
 Paths are **not** machine-specific. Set `CVE_WORKDIR`, `CVE_JAVA_HOME_8`, and
 `CVE_JAVA_HOME_11` on each host (see `.env.example`).
+
+**JDK by release baseline:** `3.2.3.*` → JDK 8, `3.3.6.*` → JDK 11 (via
+`CVE_RELEASE`, `CVE_ADDRESS_RELEASE`, or each profile's `release` field).
 
 ## Setup
 
@@ -76,6 +79,9 @@ python3 cve_agent.py --address zookeeper
 python3 cve_agent.py --address zookeeper --release 3.3.6.4 \
     --branch nightly/3.3.6.5-1 --pr-base nightly/3.3.6.5
 python3 cve_agent.py --list-components   # or: --address  (no name)
+
+# After addressing components — lifetime token/cost by component + phase
+python3 cve_agent.py --cost-report
 ```
 
 ### Hybrid model routing

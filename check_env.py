@@ -66,13 +66,18 @@ def main() -> int:
         if p: ok(f"{t} -> {p}")
         else: info(f"{t} not on PATH (needed for FIX builds)")
 
-    # Sample profile resolution
+    # Sample profile resolution (JDK follows release baseline)
     try:
-        p = cp.get_profile("spark2")
-        ok(f"profile spark2 workdir={p['workdir']}")
-        ok(f"profile spark2 java_home={p.get('java_home') or '(empty)'}")
+        p82 = cp.get_profile("spark2", release="3.2.3.6")
+        ok(f"3.2.3.6 baseline → JDK {p82.get('jdk_version')}  "
+           f"({p82.get('java_home') or 'missing'})")
+        p336 = cp.get_profile("spark2", release="3.3.6.4")
+        ok(f"3.3.6.4 baseline → JDK {p336.get('jdk_version')}  "
+           f"({p336.get('java_home') or 'missing'})")
+        if not cp.resolve_java_home(11):
+            info("JDK 11 required for 3.3.6.* baselines — set CVE_JAVA_HOME_11")
     except Exception as e:
-        bad(f"get_profile(spark2): {e}"); fails += 1
+        bad(f"get_profile release JDK: {e}"); fails += 1
 
     print()
     if fails:

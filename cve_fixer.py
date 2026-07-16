@@ -36,7 +36,8 @@ import cve_profiles
 # Configuration (driven by the active profile; select with CVE_PROFILE)
 # -------------------------------------------------------------------
 PROFILE_NAME = cve_profiles.active_profile_name()
-PROFILE = cve_profiles.get_profile(PROFILE_NAME)
+PROFILE = cve_profiles.get_profile(
+    PROFILE_NAME, release=os.environ.get("CVE_RELEASE"))
 
 SPARK_REPO_URL = PROFILE["git_url"]
 TARGET_BRANCH = PROFILE["target_branch"]           # where fixes are applied

@@ -1122,7 +1122,8 @@ def _should_escalate(assistant_content, tool_results) -> bool:
     return False
 
 
-def run_agent(goal: str, messages: List[Dict]) -> List[Dict]:
+def run_agent(goal: str, messages: List[Dict],
+              cost_tracker=None) -> List[Dict]:
     # repair any dangling tool_use left by a prior run before adding the new turn
     messages[:] = _sanitize_history(messages)
     # keep user/assistant alternation valid even if a prior run ended mid-turn
@@ -1161,6 +1162,12 @@ def run_agent(goal: str, messages: List[Dict]) -> List[Dict]:
                 return messages
         _account_usage(resp.usage, current_model)
 
+        tool_uses = [b for b in resp.content if b.type == "tool_use"]
+        phase = None
+        if cost_tracker is not None:
+            phase = cost_tracker.record_turn_with_cost(
+                current_model, resp.usage, tool_uses)
+
         for block in resp.content:
             if block.type == "text" and block.text.strip():
                 print(f"\n[assistant] {block.text.strip()}")
@@ -1172,7 +1179,6 @@ def run_agent(goal: str, messages: List[Dict]) -> List[Dict]:
         # stop_reason: a response can carry a tool_use while stop_reason is
         # "max_tokens", and skipping it would strand a tool_use with no
         # tool_result and corrupt the session on the next resume.
-        tool_uses = [b for b in resp.content if b.type == "tool_use"]
         if not tool_uses:
             if resp.stop_reason == "max_tokens":
                 print("\n[warn] response hit max_tokens; consider raising "
@@ -1208,9 +1214,10 @@ def run_agent(goal: str, messages: List[Dict]) -> List[Dict]:
                   f"(build/compile failure or [ESCALATE] requested)")
 
         t = _usage_totals()
-        print(f"  [usage so far] model={current_model} in={t['in']} "
-              f"out={t['out']} cache_r={t['cache_r']} cache_w={t['cache_w']} "
-              f"~${_cost():.3f}")
+        phase_tag = f" phase={phase}" if phase else ""
+        print(f"  [usage so far] model={current_model}{phase_tag} "
+              f"in={t['in']} out={t['out']} cache_r={t['cache_r']} "
+              f"cache_w={t['cache_w']} ~${_cost():.3f}")
 
     save_session(messages)
     t = _usage_totals()
@@ -1274,15 +1281,20 @@ def main():
                   f"messages, cumulative ~${_cost():.4f}]  "
                   f"(use /reset to clear)")
 
-        def _go(goal: str):
-            run_agent(goal, messages)
+        def _go(goal: str, cost_tracker=None):
+            run_agent(goal, messages, cost_tracker=cost_tracker)
 
-        # Re-enter with the already-parsed argv so defaults stay consistent.
+        addr.run_address_cli._rates_for = _rates_for
         return addr.run_address_cli(rest, _go)
 
     if argv and argv[0] in ("--list-components",):
         import cve_address as addr
         addr.print_component_list()
+        return 0
+
+    if argv and argv[0] in ("--cost-report", "--costs"):
+        import cve_cost_tracker as ct
+        ct.print_all_costs()
         return 0
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -1306,6 +1318,7 @@ def main():
     print("    python3 cve_agent.py --full-analysis 3.3.6.4")
     print("    python3 cve_agent.py --address zookeeper")
     print("    python3 cve_agent.py --list-components")
+    print("    python3 cve_agent.py --cost-report")
     while True:
         try:
             goal = input("\n> ").strip()

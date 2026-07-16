@@ -27,6 +27,7 @@ import os
 import re
 import shutil
 from pathlib import Path
+from typing import Optional
 
 # Account that exception/closed tickets are assigned to (same across components).
 ASSIGNEE_ACCOUNT_ID = "712020:53c91b99-c1e1-4c8e-80b8-84f656392ae4"
@@ -118,6 +119,29 @@ def resolve_workdir(component: str, explicit: str = "") -> str:
         return os.path.expanduser(explicit)
     base = os.environ.get("CVE_WORKDIR", "~/cve_fix_workdir")
     return os.path.expanduser(os.path.join(base, component))
+
+
+def jdk_major_for_release(release: str) -> Optional[int]:
+    """ODP baseline JDK policy: 3.3.6.* releases use JDK 11, 3.2.3.* use JDK 8.
+
+    Returns None when the release string does not match either baseline (caller
+    falls back to the profile default).
+    """
+    r = (release or "").strip()
+    if not r:
+        return None
+    if re.search(r"3\.3\.6", r):
+        return 11
+    if re.search(r"3\.2\.3", r):
+        return 8
+    return None
+
+
+def effective_release(profile: dict, release: Optional[str] = None) -> str:
+    """Resolve the release string for JDK / scoping decisions."""
+    return (release or os.environ.get("CVE_RELEASE")
+            or os.environ.get("CVE_ADDRESS_RELEASE")
+            or profile.get("release") or "")
 
 
 # Resolved once at import (after env is loaded). Override per-run via env vars.
@@ -1426,11 +1450,12 @@ def active_profile_name() -> str:
     return os.environ.get("CVE_PROFILE", DEFAULT_PROFILE)
 
 
-def get_profile(name: str = None) -> dict:
+def get_profile(name: str = None, release: str = None) -> dict:
     """Return a copy of the named profile with portable paths resolved.
 
-    ``java_home`` is re-resolved from ``jdk_version`` (or inferred) via
-    ``resolve_java_home`` so the same profile works on macOS and Linux.
+    ``java_home`` is chosen from the ODP release baseline when possible:
+    3.3.6.* → JDK 11, 3.2.3.* → JDK 8. Override the release with the
+    ``release`` argument or ``CVE_RELEASE`` / ``CVE_ADDRESS_RELEASE`` env vars.
     ``workdir`` is under ``CVE_WORKDIR`` (default ``~/cve_fix_workdir``).
     """
     name = name or active_profile_name()
@@ -1438,19 +1463,26 @@ def get_profile(name: str = None) -> dict:
         raise SystemExit(
             f"Unknown CVE_PROFILE={name!r}. Options: {', '.join(sorted(PROFILES))}")
     p = dict(PROFILES[name])
-    # Prefer explicit jdk_version; else infer from java_home / default 8 for JVM.
-    jdk = p.get("jdk_version")
-    if jdk is None:
-        jh = p.get("java_home") or ""
-        if p.get("build_tool") == "python":
-            jdk = None
-        elif jh and _JDK11 and jh == _JDK11:
-            jdk = 11
+    rel = effective_release(p, release)
+    p["effective_release"] = rel
+
+    if p.get("build_tool") == "python":
+        jdk = None
+    else:
+        rel_jdk = jdk_major_for_release(rel)
+        if rel_jdk is not None:
+            jdk = rel_jdk
+        elif p.get("jdk_version") is not None:
+            jdk = int(p["jdk_version"])
         else:
-            jdk = 8
+            jh = p.get("java_home") or ""
+            if jh and _JDK11 and jh == _JDK11:
+                jdk = 11
+            else:
+                jdk = 8
         p["jdk_version"] = jdk
+
     if jdk is not None:
-        # Always re-resolve so CVE_JAVA_HOME_* set after import still wins.
         p["java_home"] = resolve_java_home(int(jdk)) or (p.get("java_home") or "")
     p["workdir"] = resolve_workdir(name, p.get("workdir") or "")
     return p
