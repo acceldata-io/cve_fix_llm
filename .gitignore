@@ -4,6 +4,9 @@
 # per-component fix state (local run artifacts)
 cve_fix_state*.json
 
+# full-analysis JSON reports (regenerable)
+reports/
+
 # local credentials — NEVER commit
 jira.env
 .jira_credentials

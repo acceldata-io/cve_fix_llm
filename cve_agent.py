@@ -13,6 +13,16 @@ auto-escalates (one-way) to a top tier (Opus) when a build/compile fails or the
 model emits an [ESCALATE] marker. Per-model token usage is metered so hybrid
 cost is accurate.
 
+Deterministic full-analysis mode (no LLM):
+    python3 cve_agent.py --full-analysis 3.3.6.4
+    python3 cve_full_analysis.py 3.3.6.4 --components hadoop hive
+
+Address one component end-to-end (agent-driven, approval-gated writes):
+    python3 cve_agent.py --address zookeeper
+    python3 cve_agent.py --address zookeeper --release 3.3.6.4 \\
+        --branch nightly/3.3.6.5-1 --pr-base nightly/3.3.6.5
+    python3 cve_agent.py --list-components
+
 Run:
     export ANTHROPIC_API_KEY=sk-ant-...
     # optional overrides (hybrid tiers):
@@ -1227,6 +1237,54 @@ def _reset_session() -> List[Dict]:
 
 def main():
     global client
+    # --- CLI flags ----------------------------------------------------------
+    argv = sys.argv[1:]
+    if argv and argv[0] in ("--full-analysis", "-F"):
+        # python3 cve_agent.py --full-analysis 3.3.6.4 [--components hadoop hive]
+        if len(argv) < 2 or argv[1].startswith("-"):
+            print("Usage: python3 cve_agent.py --full-analysis <release> "
+                  "[--repo-substr sehajsandhu/] [--components COMP ...] "
+                  "[--all-statuses]")
+            sys.exit(2)
+        release = argv[1]
+        rest = argv[2:]
+        import cve_full_analysis as fa
+        return fa.main([release] + rest)
+
+    if argv and argv[0] in ("--address", "-A"):
+        # python3 cve_agent.py --address zookeeper [--release 3.3.6.4] ...
+        # Resolve / list components before requiring an API key.
+        rest = argv[1:]
+        import cve_address as addr
+        args = addr.parse_address_args(rest)
+        if not args.component:
+            addr.print_component_list()
+            return 0
+        name, suggestions = addr.resolve_component(args.component)
+        if not name:
+            addr.print_component_list(suggestions=suggestions,
+                                      query=args.component)
+            return 2
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            print("ERROR: set ANTHROPIC_API_KEY first."); sys.exit(1)
+        client = anthropic.Anthropic()
+        messages = load_session()
+        if messages:
+            print(f"[resumed session '{SESSION_NAME}': {len(messages)} "
+                  f"messages, cumulative ~${_cost():.4f}]  "
+                  f"(use /reset to clear)")
+
+        def _go(goal: str):
+            run_agent(goal, messages)
+
+        # Re-enter with the already-parsed argv so defaults stay consistent.
+        return addr.run_address_cli(rest, _go)
+
+    if argv and argv[0] in ("--list-components",):
+        import cve_address as addr
+        addr.print_component_list()
+        return 0
+
     if not os.environ.get("ANTHROPIC_API_KEY"):
         print("ERROR: set ANTHROPIC_API_KEY first."); sys.exit(1)
     client = anthropic.Anthropic()
@@ -1235,15 +1293,19 @@ def main():
         print(f"[resumed session '{SESSION_NAME}': {len(messages)} messages, "
               f"cumulative ~${_cost():.4f}]  (use /reset to clear)")
 
-    goal = " ".join(sys.argv[1:]).strip()
+    goal = " ".join(argv).strip()
     if goal:
         if goal.lower() in ("/reset", "reset"):
             _reset_session()
         else:
             run_agent(goal, messages)
-        return
+        return 0
 
     print("CVE agent ready. Commands: /reset, quit.")
+    print("  Tips:")
+    print("    python3 cve_agent.py --full-analysis 3.3.6.4")
+    print("    python3 cve_agent.py --address zookeeper")
+    print("    python3 cve_agent.py --list-components")
     while True:
         try:
             goal = input("\n> ").strip()
@@ -1256,7 +1318,8 @@ def main():
             continue
         if goal:
             messages = run_agent(goal, messages)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main() or 0)

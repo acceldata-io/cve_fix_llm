@@ -12,7 +12,8 @@ tools, scoped strictly per release, with a human approval gate on every write.
 
 | File | Purpose |
 |------|---------|
-| `cve_agent.py` | Anthropic Messages API agent; exposes Jira/GitHub/OSV/shell tools with hybrid model routing, pre-fix upstream analysis, and session persistence. |
+| `cve_agent.py` | Anthropic Messages API agent; exposes Jira/GitHub/OSV/shell tools with hybrid model routing, pre-fix upstream analysis, and session persistence. Also: `--full-analysis <release>`. |
+| `cve_address.py` | Packaged `--address <component>` workflow (triage → exception/fix → PR → close Jira) with component name resolution + suggestions. |
 | `cve_analyser.py` | Jira API layer — query tickets, transition status, set exception reason / transition details. |
 | `cve_fixer.py` | Maven-based fixer — clone/patch pom, build, commit, push, open PR. Includes the rule engine (exception / close / shaded-bundle / environment R9). |
 | `cve_profiles.py` | Per-component profiles (repo, branch, build cmd, JDK, rules) + `profile_env()`. |
@@ -63,6 +64,18 @@ CVE_DRY_RUN=1 CVE_PROFILE=spark2 python3 cve_fixer.py
 
 # Agent (natural-language driver; every write is approved by a human)
 python3 cve_agent.py "Address sqoop CVEs for 3.2.3.6"
+
+# Full release analysis (deterministic — no LLM tokens):
+# FIX vs EXCEPTION counts, per-component lib/current->target list,
+# and cross-component common-version suggestions (e.g. netty 4.1.135 for all).
+python3 cve_agent.py --full-analysis 3.3.6.4
+# equivalent: python3 cve_full_analysis.py 3.3.6.4 --components hadoop hive
+
+# Address one component end-to-end (agent packs the full triage→PR→Jira flow)
+python3 cve_agent.py --address zookeeper
+python3 cve_agent.py --address zookeeper --release 3.3.6.4 \
+    --branch nightly/3.3.6.5-1 --pr-base nightly/3.3.6.5
+python3 cve_agent.py --list-components   # or: --address  (no name)
 ```
 
 ### Hybrid model routing
