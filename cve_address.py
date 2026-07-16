@@ -4,7 +4,7 @@ cve_address.py — packaged "address this component" workflow for cve_agent.
 Usage (via cve_agent CLI):
     python3 cve_agent.py --address zookeeper
     python3 cve_agent.py --address zookeeper --release 3.3.6.4 \\
-        --branch nightly/3.3.6.5-1 --pr-base nightly/3.3.6.5
+        --branch nightly/3.3.6.5 --pr-base nightly/3.3.6.5
     python3 cve_agent.py --address            # list components
 """
 
@@ -280,7 +280,7 @@ def print_component_list(suggestions: Optional[List[str]] = None,
     print(f"\nTotal: {len(comps)}"
           + (" matched" if suggestions is not None and query else " listed"))
     print("Usage: python3 cve_agent.py --address <component> "
-          "[--release 3.3.6.4] [--branch nightly/3.3.6.5-1] "
+          "[--release 3.3.6.4] [--branch nightly/3.3.6.5] "
           "[--pr-base nightly/3.3.6.5]")
     if not release:
         print("       python3 cve_agent.py --list-components "
@@ -311,9 +311,9 @@ def parse_address_args(argv: List[str]) -> argparse.Namespace:
                          "CVE_ADDRESS_RELEASE)")
     ap.add_argument("--branch",
                     default=os.environ.get("CVE_ADDRESS_BRANCH",
-                                           "nightly/3.3.6.5-1"),
+                                           "nightly/3.3.6.5"),
                     help="git branch to checkout and fix on "
-                         "(default nightly/3.3.6.5-1 or CVE_ADDRESS_BRANCH)")
+                         "(default nightly/3.3.6.5 or CVE_ADDRESS_BRANCH)")
     ap.add_argument("--pr-base",
                     default=os.environ.get("CVE_ADDRESS_PR_BASE",
                                            "nightly/3.3.6.5"),

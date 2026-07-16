@@ -17,10 +17,14 @@ Deterministic full-analysis mode (no LLM):
     python3 cve_agent.py --full-analysis 3.3.6.4
     python3 cve_full_analysis.py 3.3.6.4 --components hadoop hive
 
+Version audit (GitHub pinned libs vs --full-analysis FIX targets, no LLM):
+    python3 cve_agent.py --version-audit 3.3.6.4
+    python3 cve_agent.py --version-audit 3.3.6.4 --branch nightly/3.3.6.5
+
 Address one component end-to-end (agent-driven, approval-gated writes):
     python3 cve_agent.py --address zookeeper
     python3 cve_agent.py --address zookeeper --release 3.3.6.4 \\
-        --branch nightly/3.3.6.5-1 --pr-base nightly/3.3.6.5
+        --branch nightly/3.3.6.5 --pr-base nightly/3.3.6.5
     python3 cve_agent.py --list-components
 
 Run:
@@ -143,6 +147,12 @@ Operating rules:
 - Read/analyse first. Use query_cve and check_repo_version to establish facts
   (affected library, current version in the branch, whether a fixed version
   exists) BEFORE deciding anything.
+- For cross-component version planning, use audit_component_versions: it reads
+  the pinned versions of the standard ODP libraries (netty, jackson, guava, …)
+  from each component's GitHub branch, compares them with the --full-analysis
+  report's FIX targets, and recommends the highest common bump version that
+  covers the most CVEs. Run --full-analysis <release> first if the report is
+  missing.
 - For every CVE you intend to FIX, call analyse_upstream FIRST to get pre-fix
   insight: (a) does upstream actually have a fix and what fixed version(s)
   exist, (b) is the remediation a drop-in VERSION BUMP or does it LIKELY need
@@ -406,6 +416,29 @@ def tool_query_release(args: Dict) -> str:
         "by_severity": dict(by_severity),
     }
     return _clip(json.dumps(summary, indent=2))
+
+
+def tool_audit_component_versions(args: Dict) -> str:
+    """GitHub version matrix + comparison with --full-analysis FIX targets."""
+    import cve_version_audit as va
+    release = args.get("release") or os.environ.get("CVE_RELEASE", "3.3.6.4")
+    branch = args.get("branch", "")
+    components = args.get("components")
+    analysis_path = args.get("analysis_report", "")
+    report = va.run_audit(release, branch=branch,
+                          components=components or None,
+                          analysis_path=analysis_path)
+    # Compact payload for the model — full matrix can be large.
+    payload = {
+        "release": report["release"],
+        "github_branch": report["github_branch"],
+        "analysis_loaded": report["analysis_loaded"],
+        "analysis_report": report["analysis_report"],
+        "report_path": report["report_path"],
+        "recommendations": report["recommendations"],
+        "current_versions": report["current_versions"],
+    }
+    return _clip(json.dumps(payload, indent=2))
 
 
 def tool_check_repo_version(args: Dict) -> str:
@@ -805,6 +838,7 @@ TOOLS_IMPL = {
     "write_local_file": tool_write_local_file,
     "run_shell": tool_run_shell,
     "check_repo_version": tool_check_repo_version,
+    "audit_component_versions": tool_audit_component_versions,
     "analyse_upstream": tool_analyse_upstream,
     "analyse_component": tool_analyse_component,
     "reclassify_cve": tool_reclassify_cve,
@@ -854,6 +888,24 @@ TOOLS = [
          "path": {"type": "string", "description": "file path in the repo"},
          "pattern": {"type": "string", "description": "regex to grep (default 'version')"}},
          "required": ["repo", "branch", "path"]}},
+    {"name": "audit_component_versions",
+     "description": "Read pinned versions of the standard ODP libraries (hadoop-"
+                    "thirdparty, commons-*, netty, jackson, guava, jetty, log4j, "
+                    "etc.) from each component's GitHub branch BEFORE fixing, then "
+                    "compare with the --full-analysis report's FIX targets. Returns "
+                    "per-component current versions, analysis needed targets, and "
+                    "recommended common bump versions (highest version that fixes "
+                    "the most CVEs across components). Requires a prior "
+                    "--full-analysis <release> run (or pass analysis_report).",
+     "input_schema": {"type": "object", "properties": {
+         "release": {"type": "string", "description": "OSV release, e.g. 3.3.6.4"},
+         "branch": {"type": "string", "description": "GitHub branch to read pinned "
+                     "versions from (default nightly/3.3.6.5 for 3.3.6.*)"},
+         "components": {"type": "array", "items": {"type": "string"},
+                        "description": "optional allow-list; default all known+OSV"},
+         "analysis_report": {"type": "string",
+                             "description": "optional path to full_analysis JSON"}},
+         "required": ["release"]}},
     {"name": "analyse_upstream",
      "description": "Pre-fix insight for a fixable CVE (read-only). Answers: does "
                     "upstream have a fix and what fixed version(s) exist (via "
@@ -1252,6 +1304,7 @@ def print_usage() -> None:
 Usage:
   python3 cve_agent.py [goal ...]              interactive agent (needs API key)
   python3 cve_agent.py --full-analysis <rel>   deterministic FIX/EXCEPTION plan
+  python3 cve_agent.py --version-audit <rel>   GitHub lib versions vs analysis
   python3 cve_agent.py --address <comp>        address one component end-to-end
   python3 cve_agent.py --list-components       list static component catalog
   python3 cve_agent.py --list-components --release <rel>
@@ -1268,6 +1321,7 @@ Environment:
 
 Examples:
   python3 cve_agent.py --full-analysis 3.3.6.4
+  python3 cve_agent.py --version-audit 3.3.6.4 --branch nightly/3.3.6.5
   python3 cve_agent.py --address zookeeper --release 3.3.6.4
   python3 check_env.py
 """)
@@ -1292,6 +1346,15 @@ def main():
         rest = argv[2:]
         import cve_full_analysis as fa
         return fa.main([release] + rest)
+
+    if argv and argv[0] in ("--version-audit", "-V"):
+        if len(argv) < 2 or argv[1].startswith("-"):
+            print("Usage: python3 cve_agent.py --version-audit <release> "
+                  "[--branch nightly/3.3.6.5] [--components COMP ...] "
+                  "[--analysis-report path]")
+            sys.exit(2)
+        import cve_version_audit as va
+        return va.main(argv[1:])
 
     if argv and argv[0] in ("--address", "-A"):
         # python3 cve_agent.py --address zookeeper [--release 3.3.6.4] ...
@@ -1352,6 +1415,7 @@ def main():
     print("CVE agent ready. Commands: /reset, quit.")
     print("  Tips:")
     print("    python3 cve_agent.py --full-analysis 3.3.6.4")
+    print("    python3 cve_agent.py --version-audit 3.3.6.4")
     print("    python3 cve_agent.py --address zookeeper")
     print("    python3 cve_agent.py --list-components")
     print("    python3 cve_agent.py --cost-report")

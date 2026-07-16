@@ -12,13 +12,14 @@ tools, scoped strictly per release, with a human approval gate on every write.
 
 | File | Purpose |
 |------|---------|
-| `cve_agent.py` | Anthropic Messages API agent; exposes Jira/GitHub/OSV/shell tools with hybrid model routing, pre-fix upstream analysis, and session persistence. Also: `--full-analysis <release>`. |
+| `cve_agent.py` | Anthropic Messages API agent; exposes Jira/GitHub/OSV/shell tools with hybrid model routing, pre-fix upstream analysis, and session persistence. Also: `--full-analysis`, `--version-audit`, `--address`. |
 | `cve_cost_tracker.py` | Per-component / per-phase token & cost ledger (`reports/component_costs.json`); shown after `--address` and via `--cost-report`. |
 | `cve_analyser.py` | Jira API layer — query tickets, transition status, set exception reason / transition details. |
 | `cve_fixer.py` | Maven-based fixer — clone/patch pom, build, commit, push, open PR. Includes the rule engine (exception / close / shaded-bundle / environment R9). |
 | `cve_profiles.py` | Per-component profiles (repo, branch, build cmd, JDK, rules) + `profile_env()`. |
 | `cve_reclassify.py` | Reusable CLI to reclassify OSV tickets for a CVE across components. |
 | `audit_versions.py` | Reads configured library versions across component branches. |
+| `cve_version_audit.py` | GitHub pinned lib versions vs `--full-analysis` FIX targets + common bump suggestions. |
 | `check_env.py` | Portable env check (JDK / credentials / workdir) for any Linux or macOS host. |
 | `fix_*.py` | Per-component fix drivers. |
 | `docs/` | CVE remediation automation write-up + per-component library inventories. |
@@ -75,10 +76,14 @@ python3 cve_agent.py "Address sqoop CVEs for 3.2.3.6"
 python3 cve_agent.py --full-analysis 3.3.6.4
 # equivalent: python3 cve_full_analysis.py 3.3.6.4 --components hadoop hive
 
+# Version audit: read pinned libs from GitHub, compare with analysis report
+python3 cve_agent.py --version-audit 3.3.6.4 --branch nightly/3.3.6.5
+# run --full-analysis first; output: reports/version_audit_3.3.6.4.json
+
 # Address one component end-to-end (agent packs the full triage→PR→Jira flow)
 python3 cve_agent.py --address zookeeper
 python3 cve_agent.py --address zookeeper --release 3.3.6.4 \
-    --branch nightly/3.3.6.5-1 --pr-base nightly/3.3.6.5
+    --branch nightly/3.3.6.5 --pr-base nightly/3.3.6.5
 python3 cve_agent.py --list-components                    # static catalog
 python3 cve_agent.py --list-components --release 3.3.6.4  # + OSV Jira (needs creds)
 
