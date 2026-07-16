@@ -50,6 +50,10 @@ import sys
 import urllib.parse
 from typing import Dict, List
 
+import cve_env
+
+cve_env.load_repo_env()
+
 import anthropic
 
 import cve_analyser as ca
@@ -1242,10 +1246,41 @@ def _reset_session() -> List[Dict]:
     return []
 
 
+def print_usage() -> None:
+    print("""CVE agent — human-in-the-loop OSV remediation
+
+Usage:
+  python3 cve_agent.py [goal ...]              interactive agent (needs API key)
+  python3 cve_agent.py --full-analysis <rel>   deterministic FIX/EXCEPTION plan
+  python3 cve_agent.py --address <comp>        address one component end-to-end
+  python3 cve_agent.py --list-components       list static component catalog
+  python3 cve_agent.py --list-components --release <rel>
+                                               list + OSV Jira components
+  python3 cve_agent.py --cost-report           per-component token/cost ledger
+
+Environment:
+  Credentials are read from the process environment. A repo-local .env file is
+  loaded automatically (see .env.example). You can also run: source .env
+
+  ANTHROPIC_API_KEY          required for agent / --address runs
+  CVE_JIRA_EMAIL / CVE_JIRA_API_TOKEN   or ~/.config/cve_fix/jira.env
+  GITHUB_TOKEN / GH_TOKEN    PR creation
+
+Examples:
+  python3 cve_agent.py --full-analysis 3.3.6.4
+  python3 cve_agent.py --address zookeeper --release 3.3.6.4
+  python3 check_env.py
+""")
+
+
 def main():
     global client
     # --- CLI flags ----------------------------------------------------------
     argv = sys.argv[1:]
+    if argv and argv[0] in ("-h", "--help"):
+        print_usage()
+        return 0
+
     if argv and argv[0] in ("--full-analysis", "-F"):
         # python3 cve_agent.py --full-analysis 3.3.6.4 [--components hadoop hive]
         if len(argv) < 2 or argv[1].startswith("-"):
@@ -1265,7 +1300,7 @@ def main():
         import cve_address as addr
         args = addr.parse_address_args(rest)
         if not args.component:
-            addr.print_component_list()
+            addr.print_component_list(release=args.release)
             return 0
         name, suggestions = addr.resolve_component(args.component)
         if not name:

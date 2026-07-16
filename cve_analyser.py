@@ -5,6 +5,10 @@ import re
 from typing import List, Dict, Optional
 from collections import defaultdict
 
+import cve_env
+
+cve_env.load_repo_env()
+
 from requests.adapters import HTTPAdapter
 try:
     from urllib3.util.retry import Retry

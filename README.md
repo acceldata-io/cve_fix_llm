@@ -49,7 +49,8 @@ Paths are **not** machine-specific. Set `CVE_WORKDIR`, `CVE_JAVA_HOME_8`, and
 git clone <this-repo> && cd cve_fix_llm
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env && $EDITOR .env && source .env
+cp .env.example .env && $EDITOR .env
+# .env is loaded automatically by cve_agent.py / check_env.py (or: source .env)
 python3 check_env.py            # verify JDK / creds / workdir
 ```
 

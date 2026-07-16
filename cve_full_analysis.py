@@ -27,6 +27,10 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
+import cve_env
+
+cve_env.load_repo_env()
+
 import cve_analyser as ca
 import cve_profiles as cp
 

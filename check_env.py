@@ -9,6 +9,10 @@ import os
 import shutil
 import sys
 
+import cve_env
+
+cve_env.load_repo_env()
+
 
 def ok(msg): print(f"  OK  {msg}")
 def bad(msg): print(f" FAIL {msg}")
@@ -34,6 +38,9 @@ def main() -> int:
             bad(f"package {pkg} missing (pip install -r requirements.txt)"); fails += 1
 
     # Credentials
+    env_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if os.path.isfile(env_file):
+        ok(f".env loaded from {env_file}")
     for k in ("ANTHROPIC_API_KEY", "CVE_JIRA_EMAIL", "CVE_JIRA_API_TOKEN",
               "GITHUB_TOKEN"):
         if os.environ.get(k) or (k == "GITHUB_TOKEN" and os.environ.get("GH_TOKEN")):
