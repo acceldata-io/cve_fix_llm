@@ -350,6 +350,31 @@ def fetch_release_tickets(release: str, repo_substr: str = "sehajsandhu/",
     return out
 
 
+def discover_osv_components(release: str, repo_substr: str = "sehajsandhu/",
+                            severities: Optional[List[str]] = None) -> List[str]:
+    """Distinct cve-repo component names from OSV Jira for a release."""
+    rows = fetch_release_tickets(release, repo_substr=repo_substr,
+                                 severities=severities)
+    return sorted({r["comp"] for r in rows
+                   if r.get("comp") and r["comp"] != "UNKNOWN"})
+
+
+def osv_component_stats(release: str, repo_substr: str = "sehajsandhu/",
+                        severities: Optional[List[str]] = None) -> Dict[str, Dict]:
+    """Per-component ticket totals and To-Do counts from OSV Jira."""
+    rows = fetch_release_tickets(release, repo_substr=repo_substr,
+                                 severities=severities)
+    total: Counter = Counter()
+    todo: Counter = Counter()
+    for r in rows:
+        c = r.get("comp") or "UNKNOWN"
+        total[c] += 1
+        if r.get("status") == "To Do":
+            todo[c] += 1
+    return {c: {"total": total[c], "todo": todo[c]}
+            for c in sorted(total)}
+
+
 # ---------------------------------------------------------------------------
 # Analysis
 # ---------------------------------------------------------------------------

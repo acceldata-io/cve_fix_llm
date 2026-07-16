@@ -1289,7 +1289,8 @@ def main():
 
     if argv and argv[0] in ("--list-components",):
         import cve_address as addr
-        addr.print_component_list()
+        args = addr.parse_list_args(argv[1:])
+        addr.print_component_list(release=args.release)
         return 0
 
     if argv and argv[0] in ("--cost-report", "--costs"):

@@ -78,7 +78,8 @@ python3 cve_agent.py --full-analysis 3.3.6.4
 python3 cve_agent.py --address zookeeper
 python3 cve_agent.py --address zookeeper --release 3.3.6.4 \
     --branch nightly/3.3.6.5-1 --pr-base nightly/3.3.6.5
-python3 cve_agent.py --list-components   # or: --address  (no name)
+python3 cve_agent.py --list-components                    # static catalog
+python3 cve_agent.py --list-components --release 3.3.6.4  # + OSV Jira (needs creds)
 
 # After addressing components — lifetime token/cost by component + phase
 python3 cve_agent.py --cost-report

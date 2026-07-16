@@ -32,6 +32,9 @@ _EXTRA_COMPONENTS = {
     "hadoop", "hive", "zookeeper", "trino", "sqoop", "spark3",
     "hudi", "iceberg", "atlas", "storm", "solr", "superset",
     "presto", "alluxio", "arrow", "bigtop",
+    # 3.3.6.4+ OSV repos (often without full profiles yet)
+    "celeborn", "spark4", "spark4-hbase-connectors",
+    "livy4", "nifi2", "ozone2",
 }
 
 # Common aliases / typos → canonical name
@@ -44,11 +47,26 @@ _ALIASES = {
     "livy": "livy2",
     "hbase_connectors": "hbase-connectors",
     "hbaseconnectors": "hbase-connectors",
+    "spark4hbase": "spark4-hbase-connectors",
 }
 
 
-def list_components() -> List[str]:
+def static_components() -> List[str]:
+    """Built-in catalog (profiles + known extras). No Jira call."""
     return sorted(set(cp.PROFILES) | _EXTRA_COMPONENTS)
+
+
+def list_components(release: Optional[str] = None) -> List[str]:
+    """Catalog only, or catalog merged with OSV Jira when release is set."""
+    static = static_components()
+    if not release:
+        return static
+    try:
+        import cve_full_analysis as fa
+        osv = fa.discover_osv_components(release)
+        return sorted(set(static) | set(osv))
+    except Exception:
+        return static
 
 
 def resolve_component(name: str) -> Tuple[Optional[str], List[str]]:
@@ -211,22 +229,73 @@ writes only after showing each batch for approval.
 """
 
 
+def _component_tags(name: str, osv_names: Optional[set] = None) -> str:
+    tags: List[str] = []
+    if name in cp.PROFILES:
+        tags.append("profile")
+    elif name in _EXTRA_COMPONENTS:
+        tags.append("extra")
+    if osv_names is not None and name in osv_names:
+        tags.append("osv")
+    return f" ({', '.join(tags)})" if tags else ""
+
+
 def print_component_list(suggestions: Optional[List[str]] = None,
-                         query: str = "") -> None:
-    comps = suggestions if suggestions is not None else list_components()
+                         query: str = "", release: str = "") -> None:
+    osv_stats: Dict[str, Dict] = {}
+    osv_names: Optional[set] = None
+    if suggestions is None and release:
+        import cve_full_analysis as fa
+        print(f"Fetching OSV components for release {release} …")
+        osv_stats = fa.osv_component_stats(release)
+        osv_names = set(osv_stats)
+        comps = list_components(release)
+    else:
+        comps = suggestions if suggestions is not None else static_components()
+
     if query:
         print(f"Unknown component: {query!r}")
         print("Did you mean:")
+    elif release and suggestions is None:
+        static_n = len(static_components())
+        osv_only = sorted((osv_names or set()) - set(static_components()))
+        print(f"Components for release {release} "
+              f"({len(comps)} total — catalog {static_n}, "
+              f"OSV {len(osv_names or [])}, OSV-only {len(osv_only)}):")
+        if osv_only:
+            print(f"  OSV-only (not in static catalog): {', '.join(osv_only)}")
+        print()
     else:
-        print("Available components:")
+        print("Available components (static catalog — use "
+              "--list-components --release 3.3.6.4 for OSV Jira list):")
+
     for c in comps:
-        flag = " (profile)" if c in cp.PROFILES else ""
-        print(f"  - {c}{flag}")
+        tags = _component_tags(c, osv_names)
+        counts = ""
+        if osv_stats and c in osv_stats:
+            s = osv_stats[c]
+            counts = f"  [{s['todo']} todo / {s['total']} total]"
+        print(f"  - {c}{tags}{counts}")
+
     print(f"\nTotal: {len(comps)}"
-          + (" matched" if suggestions is not None and query else " available"))
+          + (" matched" if suggestions is not None and query else " listed"))
     print("Usage: python3 cve_agent.py --address <component> "
           "[--release 3.3.6.4] [--branch nightly/3.3.6.5-1] "
           "[--pr-base nightly/3.3.6.5]")
+    if not release:
+        print("       python3 cve_agent.py --list-components "
+              "--release 3.3.6.4")
+
+
+def parse_list_args(argv: List[str]) -> argparse.Namespace:
+    ap = argparse.ArgumentParser(
+        prog="cve_agent.py --list-components",
+        description="List addressable components (optionally from OSV Jira).")
+    ap.add_argument("--release",
+                    default=os.environ.get("CVE_RELEASE", ""),
+                    help="merge components seen in OSV Jira for this release "
+                         "(needs Jira creds)")
+    return ap.parse_args(argv)
 
 
 def parse_address_args(argv: List[str]) -> argparse.Namespace:
@@ -264,7 +333,7 @@ def run_address_cli(argv: List[str], run_agent_cb) -> int:
     """
     args = parse_address_args(argv)
     if not args.component:
-        print_component_list()
+        print_component_list(release=args.release)
         return 0
 
     name, suggestions = resolve_component(args.component)
