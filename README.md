@@ -18,14 +18,35 @@ tools, scoped strictly per release, with a human approval gate on every write.
 | `cve_profiles.py` | Per-component profiles (repo, branch, build cmd, JDK, rules) + `profile_env()`. |
 | `cve_reclassify.py` | Reusable CLI to reclassify OSV tickets for a CVE across components. |
 | `audit_versions.py` | Reads configured library versions across component branches. |
+| `check_env.py` | Portable env check (JDK / credentials / workdir) for any Linux or macOS host. |
 | `fix_*.py` | Per-component fix drivers. |
 | `docs/` | CVE remediation automation write-up + per-component library inventories. |
+
+## Layout (portable)
+
+```
+cve_fix_llm/                 # this repo (same on laptop or 10.101.11.82)
+  cve_agent.py / cve_*.py
+  check_env.py
+  docs/
+  .env                         # git-ignored credentials (or use env vars)
+~/cve_fix_workdir/            # CVE_WORKDIR — component git checkouts (not in repo)
+  hadoop/  hive/  spark/  …
+~/.config/cve_fix/jira.env    # optional Jira credentials file
+```
+
+Paths are **not** machine-specific. Set `CVE_WORKDIR`, `CVE_JAVA_HOME_8`, and
+`CVE_JAVA_HOME_11` on each host (see `.env.example`).
 
 ## Setup
 
 ```bash
+# any Linux or macOS host
+git clone <this-repo> && cd cve_fix_llm
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env && $EDITOR .env && source .env   # fill in real values
+cp .env.example .env && $EDITOR .env && source .env
+python3 check_env.py            # verify JDK / creds / workdir
 ```
 
 Credentials are **never** hardcoded. `cve_analyser.py` reads Jira credentials
@@ -92,7 +113,7 @@ python3 cve_agent.py "For CVE-2022-42003 in hadoop 3.2.3.6, analyse upstream and
 tell me if it's a version bump or code change before fixing"
 ```
 
-See `USAGE_GUIDE.md` for the full workflow and `docs/` for the design write-up.
+See `docs/CVE_Remediation_Automation.md` for the design write-up.
 
 ## Security
 

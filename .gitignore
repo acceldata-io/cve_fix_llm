@@ -12,6 +12,8 @@ jira.env
 # python
 __pycache__/
 *.pyc
+.venv/
+venv/
 
 # OS / IDE cruft
 .DS_Store

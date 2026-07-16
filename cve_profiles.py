@@ -25,11 +25,105 @@ APPLY=True for a spark3 profile.
 
 import os
 import re
+import shutil
+from pathlib import Path
 
 # Account that exception/closed tickets are assigned to (same across components).
 ASSIGNEE_ACCOUNT_ID = "712020:53c91b99-c1e1-4c8e-80b8-84f656392ae4"
 
 DEFAULT_PROFILE = "spark2"
+
+# ---------------------------------------------------------------------------
+# Portable paths (macOS laptop OR any Linux remote, e.g. 10.101.11.82)
+# ---------------------------------------------------------------------------
+# Prefer env vars so the same repo works everywhere without editing profiles:
+#   CVE_JAVA_HOME_8 / CVE_JAVA_HOME_11  — absolute JDK homes
+#   CVE_WORKDIR                         — base dir for component checkouts
+#                                         (default: ~/cve_fix_workdir)
+# Falls back to common Linux/macOS install locations, then `java` on PATH.
+
+
+def _first_existing(*candidates) -> str:
+    for c in candidates:
+        if not c:
+            continue
+        p = os.path.expanduser(str(c))
+        if os.path.isdir(p):
+            return p
+    return ""
+
+
+def resolve_java_home(major: int = 8) -> str:
+    """Resolve a JDK home for the given major version (8 or 11, …).
+
+    Explicit ``CVE_JAVA_HOME_<N>`` / ``JAVA_HOME_<N>`` always win (even if the
+    directory is not created yet — so a remote ``.env`` is deterministic).
+    Otherwise probe common Linux/macOS install layouts, then ``java`` on PATH.
+    """
+    major = int(major)
+    for k in (f"CVE_JAVA_HOME_{major}", f"JAVA_HOME_{major}"):
+        v = (os.environ.get(k) or "").strip()
+        if v:
+            return os.path.expanduser(v)
+    # JAVA_HOME only as a last-env fallback for the requested major when set.
+    if major == 8:
+        v = (os.environ.get("JAVA_HOME") or "").strip()
+        if v:
+            return os.path.expanduser(v)
+
+    # Common Linux (yum/apt/temurin/corretto) + macOS Corretto layouts.
+    linux = [
+        f"/usr/lib/jvm/java-{major}-openjdk",
+        f"/usr/lib/jvm/java-{major}-openjdk-amd64",
+        f"/usr/lib/jvm/temurin-{major}-jdk",
+        f"/usr/lib/jvm/java-{major}-amazon-corretto",
+        f"/usr/lib/jvm/corretto-{major}",
+        f"/opt/java/jdk-{major}",
+        f"/opt/jdk-{major}",
+        f"/usr/lib/jvm/jdk-{major}",
+    ]
+    # Also accept "java-1.8.0-openjdk" style dirs
+    if major == 8:
+        linux = [
+            "/usr/lib/jvm/java-1.8.0-openjdk",
+            "/usr/lib/jvm/java-1.8.0-openjdk-amd64",
+            "/usr/lib/jvm/jre-1.8.0-openjdk",
+        ] + linux
+    mac_home = os.path.expanduser("~/Library/Java/JavaVirtualMachines")
+    mac = []
+    if os.path.isdir(mac_home):
+        for d in sorted(os.listdir(mac_home), reverse=True):
+            # corretto-1.8.0_412 / corretto-11.0.23 / temurin-8.jdk …
+            if re.search(rf"(?:^|[-_])(?:1\.)?{major}(?:\D|$)", d):
+                mac.append(os.path.join(mac_home, d, "Contents", "Home"))
+
+    found = _first_existing(*linux, *mac)
+    if found:
+        return found
+
+    # Last resort: derive from `java` on PATH (may not match requested major).
+    java_bin = shutil.which("java")
+    if java_bin:
+        real = Path(java_bin).resolve()
+        # .../bin/java -> home is parent of bin
+        if real.parent.name == "bin":
+            return str(real.parent.parent)
+    return ""
+
+
+def resolve_workdir(component: str, explicit: str = "") -> str:
+    """Component checkout path under CVE_WORKDIR (portable across machines)."""
+    if explicit and not explicit.startswith("/Users/"):
+        # Keep relative / ~/ paths; drop machine-specific absolute Mac paths.
+        return os.path.expanduser(explicit)
+    base = os.environ.get("CVE_WORKDIR", "~/cve_fix_workdir")
+    return os.path.expanduser(os.path.join(base, component))
+
+
+# Resolved once at import (after env is loaded). Override per-run via env vars.
+_JDK8 = resolve_java_home(8)
+_JDK11 = resolve_java_home(11)
+_SPARK3_JAVA_HOME = _JDK8  # spark3 builds on JDK 8 for ODP 3.2.3.7 baseline
 
 
 # ===================================================================
@@ -619,14 +713,9 @@ _LIVY2_BUILD_CMD = (
 )
 
 
-# ===================================================================
 # Shared spark3 build settings (confirmed: all spark3 lines build on the
-# 3.2.3.7 baseline with JDK 1.8 and the same make-distribution invocation).
-# ===================================================================
-_SPARK3_JAVA_HOME = (
-    "/Users/senthilkumar/Library/Java/JavaVirtualMachines/"
-    "corretto-1.8.0_412/Contents/Home"
-)
+# 3.2.3.7 baseline with JDK 8 and the same make-distribution invocation).
+# JDK home comes from resolve_java_home(8) / CVE_JAVA_HOME_8 (see top of file).
 _SPARK3_BUILD_CMD = (
     "sh -x dev/make-distribution.sh --tgz "
     "-Phadoop-3.2,hive,hive-thriftserver,yarn,sparkr,kubernetes,"
@@ -932,7 +1021,7 @@ PROFILES = {
         "target_branch": "nightly/ODP-3.2.3.7-2",
         "workdir": "~/cve_fix_workdir/spark",   # existing spark2 checkout
         "pom_path": "pom.xml",
-        "java_home": "/Users/senthilkumar/Library/Java/JavaVirtualMachines/corretto-1.8.0_412/Contents/Home",
+        "java_home": _JDK8,
         "build_cmd": (
             "sh -x dev/make-distribution.sh --tgz "
             "-Phadoop-3.2,hive,hive-thriftserver,yarn,sparkr,kubernetes,"
@@ -1002,10 +1091,9 @@ PROFILES = {
         "release": "3.2.3.6",
         "git_url": "https://github.com/acceldata-io/livy.git",
         "target_branch": "nightly/ODP-3.2.3.7-2",
-        "workdir": "/Users/senthilkumar/Documents/Senthilkumar/AccelData/ODP-3.2.3.7-2/livy",
+        "workdir": "~/cve_fix_workdir/livy",
         "pom_path": "pom.xml",
-        "java_home": ("/Users/senthilkumar/Library/Java/JavaVirtualMachines/"
-                      "corretto-1.8.0_412/Contents/Home"),
+        "java_home": _JDK8,
         "build_cmd": _LIVY2_BUILD_CMD,
         "aligned_versions": _LIVY2_ALIGNED,
         "fix_targets": _LIVY2_FIX_TARGETS,
@@ -1028,8 +1116,7 @@ PROFILES = {
         "target_branch": "nightly/ODP-3.5.1.3.2.3.7-2",
         "workdir": "~/cve_fix_workdir/livy3_3_5_1",
         "pom_path": "pom.xml",
-        "java_home": ("/Users/senthilkumar/Library/Java/JavaVirtualMachines/"
-                      "corretto-1.8.0_412/Contents/Home"),
+        "java_home": _JDK8,
         "build_cmd": _LIVY2_BUILD_CMD,
         "aligned_versions": _LIVY2_ALIGNED,
         "fix_targets": _LIVY2_FIX_TARGETS,
@@ -1066,8 +1153,7 @@ PROFILES = {
         "target_branch": "nightly/ODP-3.3.3.3.2.3.7-2",
         "workdir": "~/cve_fix_workdir/livy3_3_3_3",
         "pom_path": "pom.xml",
-        "java_home": ("/Users/senthilkumar/Library/Java/JavaVirtualMachines/"
-                      "corretto-1.8.0_412/Contents/Home"),
+        "java_home": _JDK8,
         "build_cmd": _LIVY2_BUILD_CMD,
         "aligned_versions": _LIVY2_ALIGNED,
         "fix_targets": _LIVY2_FIX_TARGETS,
@@ -1100,8 +1186,7 @@ PROFILES = {
         "target_branch": "nightly/ODP-3.2.3.7-2",
         "workdir": "~/cve_fix_workdir/hbase-connectors",
         "pom_path": "pom.xml",
-        "java_home": ("/Users/senthilkumar/Library/Java/JavaVirtualMachines/"
-                      "corretto-1.8.0_412/Contents/Home"),
+        "java_home": _JDK8,
         # The reactor needs hbase-shaded-mapreduce / hbase-shaded-testing-util
         # and the ODP HBase 2.5 / Hadoop forks, which live in the acceldata
         # odp-staging-release repo (not the odp-release repo the global
@@ -1134,8 +1219,7 @@ PROFILES = {
         "workdir": "~/cve_fix_workdir/pinot",
         "pom_path": "pom.xml",
         # Pinot requires JDK 11 (jdk.version=11), unlike the JDK 8 components.
-        "java_home": ("/Users/senthilkumar/Library/Java/JavaVirtualMachines/"
-                      "corretto-11.0.23/Contents/Home"),
+        "java_home": _JDK11,
         # Reuses hbc-settings.xml (adds the acceldata odp-staging-release repo,
         # which hosts the ODP Hadoop/ZooKeeper forks the reactor needs).
         "build_cmd": (
@@ -1183,8 +1267,7 @@ PROFILES = {
         "workdir": "~/cve_fix_workdir/ch-ui",
         "pom_path": "ch-ui-wrapper/pom.xml",
         # Spring Boot 2.7 + logback 1.5.x / tomcat 9.0.119 build on JDK 11.
-        "java_home": ("/Users/senthilkumar/Library/Java/JavaVirtualMachines/"
-                      "corretto-11.0.23/Contents/Home"),
+        "java_home": _JDK11,
         "build_cmd": ("mvn -q -DskipTests -f ch-ui-wrapper/pom.xml clean package"),
         "aligned_versions": {},
         "fix_targets": [],
@@ -1216,8 +1299,7 @@ PROFILES = {
         "target_branch": "nightly/ODP-3.2.3.7-2",
         "workdir": "~/cve_fix_workdir/druid",
         "pom_path": "pom.xml",
-        "java_home": ("/Users/senthilkumar/Library/Java/JavaVirtualMachines/"
-                      "corretto-1.8.0_412/Contents/Home"),
+        "java_home": _JDK8,
         # hbc-settings.xml has NO global mirror, so Druid's own pom repositories
         # (esp. the mulesoft 'sigar' repo hosting org.hyperic:sigar-dist) resolve
         # -- the global ~/.m2 settings mirrors *,!central to the ODP nexus, which
@@ -1250,8 +1332,7 @@ PROFILES = {
         "target_branch": "nightly/ODP-3.2.3.7-2",
         "workdir": "~/cve_fix_workdir/tez",
         "pom_path": "pom.xml",
-        "java_home": ("/Users/senthilkumar/Library/Java/JavaVirtualMachines/"
-                      "corretto-1.8.0_412/Contents/Home"),
+        "java_home": _JDK8,
         "build_cmd": ("mvn -DskipTests -Dmaven.javadoc.skip=true -Drat.skip=true "
                       "-pl '!tez-ui,!tez-dist' -am clean install"),
         "aligned_versions": {},
@@ -1278,8 +1359,7 @@ PROFILES = {
         "target_branch": "nightly/ODP-3.2.3.7-2",
         "workdir": "~/cve_fix_workdir/impala",
         "pom_path": "java/pom.xml",
-        "java_home": ("/Users/senthilkumar/Library/Java/JavaVirtualMachines/"
-                      "corretto-1.8.0_412/Contents/Home"),
+        "java_home": _JDK8,
         "build_cmd": ("source bin/impala-config.sh >/dev/null 2>&1; "
                       "cd java && mvn -o dependency:tree"),
         "aligned_versions": {},
@@ -1303,8 +1383,7 @@ PROFILES = {
         "target_branch": "nightly/ODP-3.2.3.7-2",
         "workdir": "~/cve_fix_workdir/flink",
         "pom_path": "pom.xml",
-        "java_home": ("/Users/senthilkumar/Library/Java/JavaVirtualMachines/"
-                      "corretto-11.0.23/Contents/Home"),
+        "java_home": _JDK11,
         "build_cmd": "mvn -q -DskipTests -pl flink-dist -am clean package",
         "aligned_versions": {"log4j2": "2.25.4"},
         "fix_targets": [
@@ -1330,10 +1409,9 @@ PROFILES = {
         "release": "3.2.3.6",
         "git_url": "https://github.com/acceldata-io/livy.git",
         "target_branch": "nightly/ODP-3.2.3.7-2",
-        "workdir": "/Users/senthilkumar/Documents/Senthilkumar/AccelData/ODP-3.2.3.7-2/livy",
+        "workdir": "~/cve_fix_workdir/livy",
         "pom_path": "pom.xml",
-        "java_home": ("/Users/senthilkumar/Library/Java/JavaVirtualMachines/"
-                      "corretto-1.8.0_412/Contents/Home"),
+        "java_home": _JDK8,
         "build_cmd": _LIVY2_BUILD_CMD,
         "aligned_versions": _LIVY2_ALIGNED,
         "fix_targets": _LIVY2_FIX_TARGETS,
@@ -1349,11 +1427,33 @@ def active_profile_name() -> str:
 
 
 def get_profile(name: str = None) -> dict:
+    """Return a copy of the named profile with portable paths resolved.
+
+    ``java_home`` is re-resolved from ``jdk_version`` (or inferred) via
+    ``resolve_java_home`` so the same profile works on macOS and Linux.
+    ``workdir`` is under ``CVE_WORKDIR`` (default ``~/cve_fix_workdir``).
+    """
     name = name or active_profile_name()
     if name not in PROFILES:
         raise SystemExit(
             f"Unknown CVE_PROFILE={name!r}. Options: {', '.join(sorted(PROFILES))}")
-    return PROFILES[name]
+    p = dict(PROFILES[name])
+    # Prefer explicit jdk_version; else infer from java_home / default 8 for JVM.
+    jdk = p.get("jdk_version")
+    if jdk is None:
+        jh = p.get("java_home") or ""
+        if p.get("build_tool") == "python":
+            jdk = None
+        elif jh and _JDK11 and jh == _JDK11:
+            jdk = 11
+        else:
+            jdk = 8
+        p["jdk_version"] = jdk
+    if jdk is not None:
+        # Always re-resolve so CVE_JAVA_HOME_* set after import still wins.
+        p["java_home"] = resolve_java_home(int(jdk)) or (p.get("java_home") or "")
+    p["workdir"] = resolve_workdir(name, p.get("workdir") or "")
+    return p
 
 
 def profile_env(profile: dict) -> dict:
@@ -1363,11 +1463,11 @@ def profile_env(profile: dict) -> dict:
          "build_tool": <"maven"|"gradle"|"python">}
 
     `jdk` comes from an explicit ``jdk_version`` field, else it is inferred from
-    ``java_home`` (e.g. corretto-1.8 -> 8, corretto-11 -> 11); it is None for
-    non-JVM (python) components. These values let cve_fixer gate FIX vs
-    EXCEPTION on environment compatibility: a patched library that requires a
-    newer JDK/Python than the component runs on is NOT a valid fix and must be
-    routed to an Exception (environment/compatibility constraint).
+    ``java_home`` (e.g. corretto-1.8 -> 8, corretto-11 -> 11, java-11-openjdk);
+    it is None for non-JVM (python) components. These values let cve_fixer gate
+    FIX vs EXCEPTION on environment compatibility: a patched library that
+    requires a newer JDK/Python than the component runs on is NOT a valid fix
+    and must be routed to an Exception (environment/compatibility constraint).
     """
     jdk = profile.get("jdk_version")
     if jdk is None:
@@ -1397,10 +1497,8 @@ def profile_env(profile: dict) -> dict:
 # Fields marked VERIFY still need confirmation before an APPLY run.
 # ===================================================================
 
-_JDK8 = ("/Users/senthilkumar/Library/Java/JavaVirtualMachines/"
-         "corretto-1.8.0_412/Contents/Home")
-_JDK11 = ("/Users/senthilkumar/Library/Java/JavaVirtualMachines/"
-          "corretto-11.0.23/Contents/Home")
+# JDK homes for skeleton profiles: resolved via env / common install paths
+# (see resolve_java_home at top of file). Do NOT hardcode machine paths here.
 
 
 def _skeleton(**kw):
