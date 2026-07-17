@@ -90,8 +90,10 @@ AUTO_ESCALATE = os.environ.get("CVE_AGENT_AUTO_ESCALATE", "1") not in ("", "0", 
 # escalate during a run.
 MODEL = TIER_MODELS[START_TIER]
 
-MAX_TOKENS = int(os.environ.get("CVE_AGENT_MAX_TOKENS", "4096"))
+MAX_TOKENS = int(os.environ.get("CVE_AGENT_MAX_TOKENS", "16384"))
 MAX_ITERS = int(os.environ.get("CVE_AGENT_MAX_ITERS", "40"))
+# How many times to auto-continue when a reply is truncated with no tool_use.
+MAX_TOKEN_CONTINUES = int(os.environ.get("CVE_AGENT_MAX_TOKEN_CONTINUES", "3"))
 AUTO_APPROVE = os.environ.get("CVE_AGENT_AUTOAPPROVE", "") not in ("", "0", "false", "False")
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -163,9 +165,12 @@ Operating rules:
   upstream OSS repo+path (e.g. apache/hadoop + hadoop-project/pom.xml). Report
   this verdict to the human before applying a fix — if there is NO upstream fix,
   do not invent a bump: cherry-pick or route to EXCEPTION.
-- Classify each CVE as: FIX (bump a version), EXCEPTION (cannot bump / not
-  fixable here), CLOSE (already fixed upstream/platform), or FALSE POSITIVE /
+- Classify each CVE / GHSA as: FIX (bump a version), EXCEPTION (cannot bump /
+  not fixable here), CLOSE (already fixed upstream/platform), or FALSE POSITIVE /
   NOT APPLICABLE. Justify exceptions and closures with concrete reasons.
+  Some OSV tickets only have a GHSA-* id in the CVE-ID field (no CVE alias yet).
+  Treat GHSA-xxxx-xxxx-xxxx as a first-class id for query_cve / reclassify_cve /
+  analyse_upstream — never report or skip them as UNKNOWN.
 - Prefer the smallest safe change. Respect known constraints: libthrift cannot
   go to 0.23 (breaks Hive); protobuf 2.5.0 pinned for Hadoop wire-format; jetty
   9.4.x fix only in 11/12 (jakarta); zookeeper/hadoop are platform-owned forks;
@@ -274,7 +279,7 @@ def tool_list_profiles(_: Dict) -> str:
 
 
 def tool_query_cve(args: Dict) -> str:
-    cve = args["cve_id"]
+    cve = ca.normalize_vuln_id(args["cve_id"])
     repo = args.get("repo_substr")
     release = args.get("release")
     jql = f'project = OSV AND text ~ "{cve}"'
@@ -574,7 +579,7 @@ def tool_analyse_upstream(args: Dict) -> str:
     """Pre-fix insight for a fixable CVE: does upstream have a fix, what fixed
     version(s) exist, is remediation a drop-in version bump or likely code
     changes, and what version does upstream main/master currently ship."""
-    cve = args.get("cve_id", "")
+    cve = ca.normalize_vuln_id(args.get("cve_id", ""))
     current = args.get("current_version", "")
     result: Dict = {"cve": cve, "current_version": current}
 
@@ -697,7 +702,7 @@ def tool_analyse_component(args: Dict) -> str:
 
 
 def tool_reclassify_cve(args: Dict) -> str:
-    cve = args["cve_id"]
+    cve = ca.normalize_vuln_id(args["cve_id"])
     to_status = args["to_status"]
     comment = args.get("comment", "")
     dry_run = args.get("dry_run", True)
@@ -858,10 +863,13 @@ TOOLS = [
      "description": "List all configured component profiles (repo, release, branch).",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "query_cve",
-     "description": "Look up a CVE in OSV Jira: affected library/version, fixed "
-                    "version, and per-repo/status breakdown. Use to establish facts.",
+     "description": "Look up a CVE or GHSA in OSV Jira: affected library/version, "
+                    "fixed version, and per-repo/status breakdown. Use to establish "
+                    "facts. Pass either CVE-YYYY-NNNN or GHSA-xxxx-xxxx-xxxx "
+                    "(some tickets only have a GHSA id — treat that as the id).",
      "input_schema": {"type": "object", "properties": {
-         "cve_id": {"type": "string"},
+         "cve_id": {"type": "string", "description": "CVE-YYYY-NNNN or "
+                    "GHSA-xxxx-xxxx-xxxx"},
          "repo_substr": {"type": "string", "description": "optional cve-repo filter, e.g. hadoop"},
          "release": {"type": "string", "description": "optional release filter, e.g. 3.2.3.6. "
                      "Results always include per-ticket release and a by_release breakdown."}},
@@ -928,7 +936,8 @@ TOOLS = [
                     "apache/hadoop + hadoop-project/pom.xml) to read upstream's "
                     "current version.",
      "input_schema": {"type": "object", "properties": {
-         "cve_id": {"type": "string"},
+         "cve_id": {"type": "string", "description": "CVE-YYYY-NNNN or "
+                    "GHSA-xxxx-xxxx-xxxx"},
          "current_version": {"type": "string", "description": "version pinned in our "
                              "branch, e.g. 9.4.54 — enables the bump classification"},
          "upstream_repo": {"type": "string", "description": "upstream OSS repo, e.g. "
@@ -946,18 +955,21 @@ TOOLS = [
      "input_schema": {"type": "object", "properties": {
          "profile": {"type": "string"}}, "required": ["profile"]}},
     {"name": "reclassify_cve",
-     "description": "Move OSV tickets for a CVE to a target status with a comment "
-                    "(and optionally clear fields). ALWAYS assigns the ticket "
-                    "(required for Jira workflow transitions). Pass assignee="
-                    "'senthil.kumar' (email, display name, or accountId) to pick "
-                    "who; default is CVE_ASSIGNEE_ACCOUNT_ID / profile default. "
-                    "dry_run=true previews; dry_run=false requires human approval "
-                    "and actually writes. IMPORTANT: when the user scoped the "
-                    "request to a release, ALWAYS pass release (e.g. '3.2.3.6') so "
-                    "tickets from other releases are NOT touched. Use include_keys "
-                    "to pin exact OSV keys for the tightest scope.",
+     "description": "Move OSV tickets for a CVE or GHSA to a target status with a "
+                    "comment (and optionally clear fields). ALWAYS assigns the "
+                    "ticket (required for Jira workflow transitions). Pass "
+                    "assignee='senthil.kumar' (email, display name, or accountId) "
+                    "to pick who; default is CVE_ASSIGNEE_ACCOUNT_ID / profile "
+                    "default. dry_run=true previews; dry_run=false requires human "
+                    "approval and actually writes. IMPORTANT: when the user scoped "
+                    "the request to a release, ALWAYS pass release (e.g. '3.2.3.6') "
+                    "so tickets from other releases are NOT touched. Use "
+                    "include_keys to pin exact OSV keys for the tightest scope. "
+                    "When the Jira CVE-ID field is GHSA-*, pass that GHSA id as "
+                    "cve_id (do not invent UNKNOWN or skip those tickets).",
      "input_schema": {"type": "object", "properties": {
-         "cve_id": {"type": "string"},
+         "cve_id": {"type": "string", "description": "CVE-YYYY-NNNN or "
+                    "GHSA-xxxx-xxxx-xxxx"},
          "to_status": {"type": "string", "description": 'e.g. "Closed" or "Exception Request"'},
          "comment": {"type": "string"},
          "assignee": {"type": "string", "description": "Jira user to assign: accountId, "
@@ -1211,8 +1223,10 @@ def run_agent(goal: str, messages: List[Dict],
     current_model = TIER_MODELS[START_TIER]
     print(f"[hybrid] triage={MODEL_TRIAGE}  orch={MODEL_ORCH}  fix={MODEL_FIX}  "
           f"| starting tier={START_TIER} ({current_model})  "
-          f"auto_escalate={'on' if AUTO_ESCALATE else 'off'}")
+          f"auto_escalate={'on' if AUTO_ESCALATE else 'off'}  "
+          f"max_tokens={MAX_TOKENS}")
 
+    max_token_continues = 0
     for step in range(1, MAX_ITERS + 1):
         try:
             resp = client.messages.create(
@@ -1251,8 +1265,29 @@ def run_agent(goal: str, messages: List[Dict],
         # tool_result and corrupt the session on the next resume.
         if not tool_uses:
             if resp.stop_reason == "max_tokens":
-                print("\n[warn] response hit max_tokens; consider raising "
-                      "MAX_TOKENS or narrowing the request")
+                max_token_continues += 1
+                print("\n[warn] response hit max_tokens "
+                      f"(limit={MAX_TOKENS}, continue "
+                      f"{max_token_continues}/{MAX_TOKEN_CONTINUES}); "
+                      "prefer fewer/larger reclassify batches. "
+                      "Raise with: export CVE_AGENT_MAX_TOKENS=16384")
+                if max_token_continues <= MAX_TOKEN_CONTINUES:
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "[system] Your previous reply was truncated "
+                            f"(max_tokens={MAX_TOKENS}). Continue from where you "
+                            "left off. Do NOT re-query every CVE. Call "
+                            "reclassify_cve in a few batches grouped by shared "
+                            "exception reason (jetty / shaded-netty / no-fix), "
+                            "with release + include_keys + assignee. Start with "
+                            "dry_run=true."
+                        ),
+                    })
+                    save_session(messages)
+                    continue
+                print("[warn] giving up auto-continue; raise "
+                      "CVE_AGENT_MAX_TOKENS or narrow the request")
             # allow a text-only [ESCALATE] to bump the tier before we stop
             if (AUTO_ESCALATE and current_model != MODEL_FIX
                     and _should_escalate(resp.content, [])):
@@ -1262,6 +1297,7 @@ def run_agent(goal: str, messages: List[Dict],
                                  "Continue with the higher-capability model."})
                 continue
             break
+        max_token_continues = 0  # reset after a successful tool round
 
         results = []
         for block in tool_uses:

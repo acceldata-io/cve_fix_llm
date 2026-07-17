@@ -234,7 +234,7 @@ def fetch_all_tickets(max_per_page: int = 100) -> List[Dict]:
     Fields fetched:
       - summary
       - customfield_10888  -> CVE-Path
-      - customfield_10127  -> CVE-ID (the actual CVE-XXXX-YYYY)
+      - customfield_10127  -> CVE-ID (CVE-XXXX-YYYY or GHSA-xxxx-xxxx-xxxx)
       - customfield_10875  -> CVE-Package (affected library/package name)
       - customfield_10892  -> CVE-Package-Version (affected version)
       - customfield_10891  -> CVE-Proposed-Fix (fixed version, rich text)
@@ -322,12 +322,40 @@ ORDER BY created DESC'''
 # -------------------------------------------------------------------
 # Helpers
 # -------------------------------------------------------------------
+# CVE-YYYY-NNNNN or GitHub Security Advisory GHSA-xxxx-xxxx-xxxx.
+# Some OSV tickets only carry a GHSA id in customfield_10127 (no CVE alias yet).
+_VULN_ID_RE = re.compile(
+    r"(?:CVE-\d{4}-\d+|GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4})",
+    re.IGNORECASE,
+)
+
+
+def normalize_vuln_id(vuln_id: str) -> str:
+    """Canonical advisory id: CVE-YYYY-NNNN uppercased, or GHSA-xxxx-xxxx-xxxx
+    (GHSA prefix upper, body lower — GitHub/OSV canonical form). Returns the
+    stripped input unchanged when it does not look like a known id."""
+    if not vuln_id:
+        return ""
+    s = str(vuln_id).strip()
+    m = _VULN_ID_RE.search(s)
+    if not m:
+        return s
+    raw = m.group(0)
+    if raw.upper().startswith("CVE-"):
+        return raw.upper()
+    return "GHSA-" + raw[5:].lower()
+
+
 def extract_cve_id(key: str, summary: str, field_value: str) -> str:
-    """Extract CVE-XXXX-YYYY from summary or dedicated field."""
+    """Extract CVE-XXXX-YYYY or GHSA-xxxx-xxxx-xxxx from the CVE-ID field,
+    summary, or issue key. Prefer the dedicated field. Returns UNKNOWN only
+    when no CVE/GHSA id is present (do not collapse GHSA tickets to UNKNOWN)."""
     for text in [field_value, summary, key]:
-        m = re.search(r"CVE-\d{4}-\d+", text, re.IGNORECASE)
+        if not text:
+            continue
+        m = _VULN_ID_RE.search(str(text))
         if m:
-            return m.group(0).upper()
+            return normalize_vuln_id(m.group(0))
     return "UNKNOWN"
 
 

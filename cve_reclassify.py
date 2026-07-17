@@ -29,9 +29,10 @@ TERMINAL_DEFAULT_SKIP = {"Closed"}
 def find_cve_tickets(cve_id: str,
                      repo_substr: Optional[str] = None,
                      release: Optional[str] = None) -> List[Dict]:
-    """Return every OSV ticket whose CVE-ID == cve_id (optionally filtered to
-    a cve-repo substring and/or a release version)."""
-    jql = f'project = OSV AND text ~ "{cve_id}"'
+    """Return every OSV ticket whose CVE-ID == cve_id (CVE-* or GHSA-*;
+    optionally filtered to a cve-repo substring and/or a release version)."""
+    want = ca.normalize_vuln_id(cve_id)
+    jql = f'project = OSV AND text ~ "{want}"'
     if repo_substr:
         jql += f' AND "cve-repo[short text]" ~ "{repo_substr}"'
     if release:
@@ -50,14 +51,14 @@ def find_cve_tickets(cve_id: str,
         r = ca.SESSION.get(url, headers={"Accept": "application/json"},
                            auth=(ca.EMAIL, ca.API_TOKEN))
         if r.status_code != 200:
-            print(f"  ERROR fetching {cve_id} [{r.status_code}]: {r.text[:200]}")
+            print(f"  ERROR fetching {want} [{r.status_code}]: {r.text[:200]}")
             break
         d = r.json()
         for iss in d.get("issues", []):
             f = iss["fields"]
             cid = ca.extract_cve_id(iss["key"], f.get("summary", "") or "",
                                     f.get("customfield_10127", "") or "")
-            if cid != cve_id:
+            if cid != want:
                 continue
             out.append({
                 "key": iss["key"],
@@ -125,6 +126,7 @@ def reclassify(cve_id: str,
                        Defaults to ca.ASSIGNEE_ACCOUNT_ID / CVE_ASSIGNEE_ACCOUNT_ID.
     """
     ca.DRY_RUN = dry_run
+    cve_id = ca.normalize_vuln_id(cve_id)
     include_repos = include_repos or []
     exclude_repos = exclude_repos or []
     clear_fields = clear_fields or []
