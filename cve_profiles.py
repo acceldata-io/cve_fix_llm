@@ -451,9 +451,9 @@ _SPARK3_SHADED_BUNDLE_RULES = [
     {
         "bundle": "htrace-core",
         "action": "exception",
-        "description": ("the vulnerable dependency is shaded inside the abandoned "
-                        "htrace-core4 incubating jar; htrace has no maintained "
-                        "release and the bundled copy cannot be patched"),
+        "description": ("This CVE is pulled from Hadoop which in-turn from "
+                        "htrace-core*. And htrace-core* is a non-active third "
+                        "party library; And hence we require exception"),
     },
     {
         "bundle": "hudi-spark",
@@ -718,11 +718,9 @@ _LIVY2_SHADED_BUNDLE_RULES = [
     {
         "bundle": "htrace-core",
         "action": "exception",
-        "description": ("jackson 2.4.0 is shaded inside the abandoned "
-                        "htrace-core4-4.1.0-incubating fat jar (pulled "
-                        "transitively via hadoop-client); htrace has no maintained "
-                        "release, so the bundled jackson cannot be patched by a "
-                        "Livy version bump"),
+        "description": ("This CVE is pulled from Hadoop which in-turn from "
+                        "htrace-core*. And htrace-core* is a non-active third "
+                        "party library; And hence we require exception"),
     },
 ]
 
@@ -862,14 +860,12 @@ _HBASE_CONNECTORS_SHADED_BUNDLE_RULES = [
                         "until hbase-thirdparty ships the patched netty"),
     },
     {
-        # jackson 2.4.0 relocated inside the abandoned htrace-core4 fat jar.
+        # jackson relocated inside the abandoned htrace-core4 fat jar.
         "bundle": "htrace-core",
         "action": "exception",
-        "description": ("jackson 2.4.0 is shaded inside the abandoned "
-                        "htrace-core4-4.1.0-incubating fat jar (pulled "
-                        "transitively via the HBase/Hadoop stack); htrace has no "
-                        "maintained release, so the bundled jackson cannot be "
-                        "patched by a version bump"),
+        "description": ("This CVE is pulled from Hadoop which in-turn from "
+                        "htrace-core*. And htrace-core* is a non-active third "
+                        "party library; And hence we require exception"),
     },
 ]
 

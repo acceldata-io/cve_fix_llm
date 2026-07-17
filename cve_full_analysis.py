@@ -259,10 +259,14 @@ def _is_java_lib(lib: str) -> bool:
 
 def classify_ticket(r: Dict, btype: str) -> Tuple[str, str]:
     """Return (FIX|EXCEPTION, reason)."""
+    path_l = (r.get("path") or "").lower()
+    jar = ca.jar_filename(r.get("path") or "").lower()
+    # Abandoned Apache HTrace fat jars (incl. shaded jackson) pulled via Hadoop.
+    if "htrace-core" in path_l or jar.startswith("htrace-core"):
+        return "EXCEPTION", "htrace-core abandoned (Hadoop transitive)"
     if _has_no_fix(r["fix"]):
         return "EXCEPTION", "no upstream fix"
     art = ca.affected_artifact(r["lib"]).lower()
-    jar = ca.jar_filename(r["path"]).lower()
     if (jar and any(x in jar for x in
                     ("shaded", "bundle", "-all", "with-dependencies", "uber"))
             and art and art not in jar):

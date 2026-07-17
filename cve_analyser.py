@@ -214,14 +214,19 @@ def _build_session() -> requests.Session:
 SESSION = _build_session()
 
 # CVE-Path patterns and their corresponding update payloads
+HTRACE_EXCEPTION_REASON = (
+    "This CVE is pulled from Hadoop which in-turn from htrace-core*. "
+    "And htrace-core* is a non-active third party library; And hence we require exception"
+)
+
 CVE_PATH_RULES = [
     {
         "patterns": [
             r"htrace-core.*\.jar",
-            r"/usr/odp/3\.2\.3\.6-.*\d+/.*/lib/htrace-core.*\.jar",
+            r"/usr/odp/.*/htrace-core.*\.jar",
         ],
         "library": "htrace",
-        "description": "This CVE is pulled from third party library htrace. And hence we require Exception",
+        "description": HTRACE_EXCEPTION_REASON,
     },
 ]
 
