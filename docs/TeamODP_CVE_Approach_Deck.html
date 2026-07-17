@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Acceldata · TeamODP — A New Approach to Open-Source Vulnerability Remediation</title>
+<style>
+  :root {
+    --bg: #0f1419;
+    --surface: #1a222c;
+    --border: #2a3544;
+    --text: #e8eef4;
+    --muted: #8b9aab;
+    --accent: #2dd4bf;
+    --accent-dim: rgba(45, 212, 191, 0.12);
+    --warn: #f0b429;
+    --good: #3dd68c;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    overflow: hidden;
+  }
+  .deck { height: 100%; position: relative; }
+  .slide {
+    display: none;
+    height: 100%;
+    padding: 4.5vh 7vw 8vh;
+    flex-direction: column;
+    justify-content: center;
+  }
+  .slide.active { display: flex; }
+  .eyebrow {
+    font-size: 0.85rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 1.2rem;
+    font-weight: 600;
+  }
+  h1 {
+    font-size: clamp(2rem, 4.2vw, 3.4rem);
+    font-weight: 650;
+    line-height: 1.15;
+    max-width: 18ch;
+    margin-bottom: 1.4rem;
+  }
+  h2 {
+    font-size: clamp(1.6rem, 3.2vw, 2.5rem);
+    font-weight: 650;
+    line-height: 1.2;
+    margin-bottom: 1.6rem;
+    max-width: 28ch;
+  }
+  .lede {
+    font-size: clamp(1.05rem, 1.6vw, 1.35rem);
+    color: var(--muted);
+    max-width: 42rem;
+    line-height: 1.55;
+  }
+  .brand-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+    margin-bottom: 2.5rem;
+  }
+  .brand {
+    font-size: 1.15rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+  .brand span { color: var(--accent); }
+  .divider {
+    width: 1px;
+    height: 1.1rem;
+    background: var(--border);
+  }
+  .team {
+    color: var(--muted);
+    font-size: 0.95rem;
+  }
+  .grid-3 {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1.25rem;
+    margin-top: 2rem;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.35rem 1.4rem;
+  }
+  .card .stat {
+    font-size: clamp(1.8rem, 3vw, 2.6rem);
+    font-weight: 700;
+    color: var(--accent);
+    line-height: 1;
+    margin-bottom: 0.45rem;
+  }
+  .card .label {
+    font-size: 0.92rem;
+    color: var(--muted);
+    line-height: 1.4;
+  }
+  .compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem;
+    margin-top: 1.5rem;
+  }
+  .compare .card h3 {
+    font-size: 0.8rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-bottom: 1rem;
+    color: var(--muted);
+  }
+  .compare ul {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+  }
+  .compare li {
+    font-size: 1.05rem;
+    line-height: 1.4;
+    padding-left: 1.1rem;
+    position: relative;
+  }
+  .compare li::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0.55em;
+    width: 0.4rem;
+    height: 0.4rem;
+    border-radius: 50%;
+    background: var(--border);
+  }
+  .compare .old li::before { background: var(--warn); }
+  .compare .new li::before { background: var(--good); }
+  .pillars {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1.1rem;
+    margin-top: 1.8rem;
+  }
+  .pillar {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.4rem;
+  }
+  .pillar .num {
+    font-size: 0.75rem;
+    color: var(--accent);
+    letter-spacing: 0.12em;
+    font-weight: 700;
+    margin-bottom: 0.6rem;
+  }
+  .pillar h3 {
+    font-size: 1.15rem;
+    margin-bottom: 0.55rem;
+  }
+  .pillar p {
+    font-size: 0.95rem;
+    color: var(--muted);
+    line-height: 1.45;
+  }
+  .benefits {
+    display: grid;
+    grid-template-columns: 1.1fr 1fr;
+    gap: 2rem;
+    margin-top: 1.2rem;
+    align-items: start;
+  }
+  .big-number {
+    font-size: clamp(2.8rem, 5vw, 4.2rem);
+    font-weight: 700;
+    color: var(--accent);
+    line-height: 1;
+  }
+  .big-caption {
+    margin-top: 0.6rem;
+    color: var(--muted);
+    font-size: 1.05rem;
+    max-width: 22rem;
+    line-height: 1.45;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.95rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.65rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+  }
+  th {
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 0.75rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  td.num { font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 600; }
+  .flow {
+    display: flex;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    margin-top: 1.8rem;
+    align-items: center;
+  }
+  .step {
+    background: var(--accent-dim);
+    border: 1px solid rgba(45, 212, 191, 0.35);
+    color: var(--accent);
+    padding: 0.55rem 0.9rem;
+    border-radius: 999px;
+    font-size: 0.88rem;
+    font-weight: 600;
+  }
+  .arrow { color: var(--muted); font-size: 1.1rem; }
+  .footer-note {
+    margin-top: 2rem;
+    font-size: 0.9rem;
+    color: var(--muted);
+    max-width: 40rem;
+    line-height: 1.5;
+  }
+  .roadmap-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.25rem;
+    margin-top: 1.2rem;
+  }
+  .roadmap-grid .card h3 {
+    font-size: 0.8rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 0.9rem;
+  }
+  .roadmap-grid ul {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.65rem;
+  }
+  .roadmap-grid li {
+    font-size: 0.95rem;
+    line-height: 1.4;
+    color: var(--text);
+    padding-left: 0;
+  }
+  .roadmap-grid li strong {
+    color: var(--text);
+    font-weight: 650;
+  }
+  .roadmap-grid li span {
+    color: var(--muted);
+    font-weight: 400;
+  }
+  .priority {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 1.4rem;
+    align-items: center;
+  }
+  .priority .tag {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.4rem 0.85rem;
+    font-size: 0.82rem;
+    color: var(--muted);
+  }
+  .priority .tag.hot {
+    border-color: rgba(45, 212, 191, 0.4);
+    color: var(--accent);
+    background: var(--accent-dim);
+  }
+  .priority-label {
+    font-size: 0.75rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-right: 0.35rem;
+  }
+  @media (max-width: 900px) {
+    .roadmap-grid { grid-template-columns: 1fr; }
+  }
+  .nav {
+    position: fixed;
+    bottom: 1.4rem;
+    right: 2rem;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    color: var(--muted);
+    font-size: 0.85rem;
+    z-index: 10;
+  }
+  .nav button {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    width: 2.2rem;
+    height: 2.2rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 1rem;
+  }
+  .nav button:hover { border-color: var(--accent); color: var(--accent); }
+  .hint {
+    position: fixed;
+    bottom: 1.5rem;
+    left: 2rem;
+    font-size: 0.75rem;
+    color: var(--muted);
+    opacity: 0.7;
+  }
+  @media (max-width: 900px) {
+    .grid-3, .compare, .pillars, .benefits { grid-template-columns: 1fr; }
+    h1 { max-width: none; }
+  }
+</style>
+</head>
+<body>
+<div class="deck" id="deck">
+
+  <!-- SLIDE 1 -->
+  <section class="slide active" data-slide="1">
+    <div class="brand-row">
+      <div class="brand">Acceldata <span>·</span></div>
+      <div class="divider"></div>
+      <div class="team">TeamODP — OpenSource Data Platform</div>
+    </div>
+    <p class="eyebrow">Security · Open Source · Operating Model</p>
+    <h1>A new way to handle open-source vulnerabilities</h1>
+    <p class="lede">
+      Not another ticket bot. A release-scoped operating model for ODP —
+      where engineers decide, machines do the repetitive work, and every
+      action stays auditable.
+    </p>
+    <div class="flow">
+      <span class="step">Facts from OSV + GitHub</span>
+      <span class="arrow">→</span>
+      <span class="step">Classify FIX / CLOSE / EXCEPTION</span>
+      <span class="arrow">→</span>
+      <span class="step">Human approval</span>
+      <span class="arrow">→</span>
+      <span class="step">PR + Jira closed</span>
+    </div>
+  </section>
+
+  <!-- SLIDE 2 -->
+  <section class="slide" data-slide="2">
+    <p class="eyebrow">The scale of the problem — release 3.3.6.4</p>
+    <h2>Manual CVE work does not scale with ODP</h2>
+    <p class="lede">
+      One release baseline. Forty-plus components. Thousands of Critical / High / Medium
+      tickets. The same CVE appears again on the next release. This is structural —
+      not a one-off backlog.
+    </p>
+    <div class="grid-3">
+      <div class="card">
+        <div class="stat">~2,700</div>
+        <div class="label">To-Do OSV tickets on a single release (Critical / High / Medium)</div>
+      </div>
+      <div class="card">
+        <div class="stat">43</div>
+        <div class="label">ODP components in scope — Spark, Hive, Hadoop, Kafka, Ranger, …</div>
+      </div>
+      <div class="card">
+        <div class="stat">Weeks</div>
+        <div class="label">Senior engineering time if every ticket is triaged by hand</div>
+      </div>
+    </div>
+    <p class="footer-note">
+      And ~70–80% of those tickets are mechanical: already fixed upstream, shaded
+      in someone else’s jar, owned by another platform component, or no fix exists.
+      Engineers should not burn weeks on that work.
+    </p>
+  </section>
+
+  <!-- SLIDE 3 -->
+  <section class="slide" data-slide="3">
+    <p class="eyebrow">The new approach — TeamODP</p>
+    <h2>Judgment stays human. Repetition becomes a system.</h2>
+    <div class="pillars">
+      <div class="pillar">
+        <div class="num">01 · GROUND TRUTH</div>
+        <h3>Release-scoped facts</h3>
+        <p>
+          Pull every OSV ticket for one release. Read pinned library versions
+          from GitHub. Never act on the wrong baseline.
+        </p>
+      </div>
+      <div class="pillar">
+        <div class="num">02 · DECIDE</div>
+        <h3>Rules first, AI when needed</h3>
+        <p>
+          Deterministic rules close the bulk at ~$0. Hybrid models only for
+          ambiguous triage and hard fixes — not for every ticket.
+        </p>
+      </div>
+      <div class="pillar">
+        <div class="num">03 · CONTROL</div>
+        <h3>Human approval gate</h3>
+        <p>
+          Nothing writes to Jira or GitHub without an engineer’s yes. PRs get
+          reviewers. Exceptions get consistent, auditable reasons.
+        </p>
+      </div>
+    </div>
+    <div class="compare" style="margin-top: 1.6rem;">
+      <div class="card old">
+        <h3>Old way</h3>
+        <ul>
+          <li>Engineer opens tickets one-by-one</li>
+          <li>Tribal knowledge for “is this fixable?”</li>
+          <li>Inconsistent exception wording</li>
+          <li>Easy to touch the wrong release</li>
+        </ul>
+      </div>
+      <div class="card new">
+        <h3>TeamODP way</h3>
+        <ul>
+          <li>Plan the whole release in hours</li>
+          <li>Rules + agent propose; humans approve</li>
+          <li>Uniform justifications + PR links</li>
+          <li>Release + component hard-scoped</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- SLIDE 4 -->
+  <section class="slide" data-slide="4">
+    <p class="eyebrow">Time &amp; cost — what Acceldata gets</p>
+    <h2>Person-weeks of triage → hours of directed work</h2>
+    <div class="benefits">
+      <div>
+        <div class="big-number">~$10–120</div>
+        <div class="big-caption">
+          Model spend per full release under the hybrid approach —
+          vs. multiple person-weeks of senior engineer time.
+        </div>
+        <p class="footer-note" style="margin-top: 1.4rem;">
+          Per ticket ≈ $0.02–0.05 · Per component ≈ $1.50–3.00 ·
+          Most tickets never reach a model (rules engine).
+        </p>
+      </div>
+      <div class="card" style="padding: 0; overflow: hidden;">
+        <table>
+          <thead>
+            <tr>
+              <th>Approach</th>
+              <th>Model cost / release</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>All Opus, no cache</td>
+              <td class="num">~$450–500</td>
+            </tr>
+            <tr>
+              <td>All Sonnet + cache</td>
+              <td class="num">~$50–90</td>
+            </tr>
+            <tr>
+              <td>Hybrid (recommended)</td>
+              <td class="num">~$60–120</td>
+            </tr>
+            <tr>
+              <td>Hybrid + full rules</td>
+              <td class="num">~$10–40</td>
+            </tr>
+            <tr>
+              <td>Manual senior eng.</td>
+              <td class="num">Weeks of salary</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- SLIDE 5 -->
+  <section class="slide" data-slide="5">
+    <p class="eyebrow">TeamODP · Demo path</p>
+    <h2>From release plan to closed tickets — with humans in the loop</h2>
+    <div class="flow">
+      <span class="step">--full-analysis</span>
+      <span class="arrow">→</span>
+      <span class="step">--version-audit</span>
+      <span class="arrow">→</span>
+      <span class="step">--address &lt;component&gt;</span>
+      <span class="arrow">→</span>
+      <span class="step">Approve → PR → Close Jira</span>
+    </div>
+    <div class="grid-3" style="margin-top: 2rem;">
+      <div class="card">
+        <div class="stat" style="font-size: 1.35rem; color: var(--text);">Plan</div>
+        <div class="label">
+          Deterministic FIX vs EXCEPTION for the whole release — zero LLM tokens.
+          Align on common library versions across components.
+        </div>
+      </div>
+      <div class="card">
+        <div class="stat" style="font-size: 1.35rem; color: var(--text);">Verify</div>
+        <div class="label">
+          Read pinned versions from GitHub before we bump. Recommend the highest
+          safe version that clears the most CVEs.
+        </div>
+      </div>
+      <div class="card">
+        <div class="stat" style="font-size: 1.35rem; color: var(--text);">Execute</div>
+        <div class="label">
+          One component at a time. Agent proposes; engineer approves. Build,
+          PR with reviewer, close OSV tickets — release-scoped.
+        </div>
+      </div>
+    </div>
+    <p class="footer-note">
+      <strong style="color: var(--text);">The ask for TeamODP:</strong>
+      Adopt this as how Acceldata remediates open-source CVEs for ODP —
+      faster releases, lower cost, consistent audit trail, engineers focused on
+      real engineering decisions.
+    </p>
+  </section>
+
+  <!-- SLIDE 6 -->
+  <section class="slide" data-slide="6">
+    <p class="eyebrow">Roadmap · Friendlier · Lower cost</p>
+    <h2>What’s next — make planning free, spend tokens only on hard judgment</h2>
+    <div class="roadmap-grid">
+      <div class="card">
+        <h3>Cut cost</h3>
+        <ul>
+          <li><strong>History compaction</strong> <span>— stop resending the full chat every turn</span></li>
+          <li><strong>Stronger Tier‑0 rules</strong> <span>— more tickets at ~$0, fewer model calls</span></li>
+          <li><strong>--address-plan-only</strong> <span>— release plan with zero / minimal LLM</span></li>
+          <li><strong>Build-log compression</strong> <span>— shrink mvn/gradle noise in context</span></li>
+          <li><strong>Cost budgets</strong> <span>— cap spend; ask before escalating to Opus</span></li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>More user-friendly</h3>
+        <ul>
+          <li><strong>Release wizard / dashboard</strong> <span>— pick release → approve plans in UI</span></li>
+          <li><strong>One-command release day</strong> <span>— analysis → version-audit → queue</span></li>
+          <li><strong>Approval with diffs</strong> <span>— pom change + CVE list + $ estimate</span></li>
+          <li><strong>Verified build matrix</strong> <span>— real build_cmd per component on 3.3.6.5</span></li>
+          <li><strong>Slack / Jira digest</strong> <span>— daily FIX / EXCEPTION / cost summary</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="priority">
+      <span class="priority-label">Next</span>
+      <span class="tag hot">1 · Compaction + cost budget</span>
+      <span class="tag hot">2 · Plan-only + wizard</span>
+      <span class="tag hot">3 · Approval UI</span>
+      <span class="tag">4 · Build matrix</span>
+      <span class="tag">5 · Richer rules</span>
+    </div>
+    <p class="footer-note" style="margin-top: 1.2rem;">
+      Direction for Acceldata TeamODP: <strong style="color: var(--text);">humans on Approve</strong>,
+      machines on repetition — planning stays free and deterministic.
+    </p>
+  </section>
+
+</div>
+
+<div class="hint">← → or click · F fullscreen</div>
+<div class="nav">
+  <span id="counter">1 / 6</span>
+  <button type="button" id="prev" aria-label="Previous">‹</button>
+  <button type="button" id="next" aria-label="Next">›</button>
+</div>
+
+<script>
+  const slides = [...document.querySelectorAll(".slide")];
+  let i = 0;
+  function show(n) {
+    i = (n + slides.length) % slides.length;
+    slides.forEach((s, idx) => s.classList.toggle("active", idx === i));
+    document.getElementById("counter").textContent = (i + 1) + " / " + slides.length;
+  }
+  document.getElementById("prev").onclick = () => show(i - 1);
+  document.getElementById("next").onclick = () => show(i + 1);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowRight" || e.key === " " || e.key === "PageDown") {
+      e.preventDefault(); show(i + 1);
+    } else if (e.key === "ArrowLeft" || e.key === "PageUp") {
+      e.preventDefault(); show(i - 1);
+    } else if (e.key === "Home") show(0);
+    else if (e.key === "End") show(slides.length - 1);
+    else if (e.key === "f" || e.key === "F") {
+      if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+      else document.exitFullscreen();
+    }
+  });
+  document.querySelector(".deck").addEventListener("click", (e) => {
+    if (e.target.closest("button")) return;
+    const mid = window.innerWidth / 2;
+    if (e.clientX > mid) show(i + 1);
+    else show(i - 1);
+  });
+</script>
+</body>
+</html>

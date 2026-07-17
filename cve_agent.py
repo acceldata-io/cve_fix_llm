@@ -183,7 +183,10 @@ Operating rules:
   this automatically.
 - Any WRITE (reclassify_cve with dry_run=false, or apply_component) will be
   shown to a human for approval. Always run a dry-run / propose step first and
-  summarise it before requesting a write.
+  summarise it before requesting a write. reclassify_cve ALWAYS assigns the
+  ticket (Jira workflow requires it). When the user names an owner (e.g.
+  senthil.kumar), pass assignee= that name/email/accountId — do NOT claim
+  assignment is unsupported.
 - Moving a ticket to "Exception Request" REQUIRES the workflow fields
   CVE-Exception-Reason and CVE-Transition-Details. reclassify_cve sets these
   automatically: pass exception_reason (one of "Deferred", "Not Exploitable",
@@ -707,13 +710,18 @@ def tool_reclassify_cve(args: Dict) -> str:
         include_keys=args.get("include_keys"),
         exception_reason=args.get("exception_reason", "Deferred"),
         transition_details=args.get("transition_details"),
+        assignee=args.get("assignee"),
     )
     if not dry_run:
         # preview first so the human sees the exact scope
         preview = cve_reclassify.reclassify(cve, to_status, comment,
                                             dry_run=True, **kwargs)
+        if preview.get("error"):
+            return _clip(json.dumps(preview, indent=2))
         summary = (f"RECLASSIFY {cve} -> {to_status}\n"
                    f"  comment: {comment}\n"
+                   f"  assignee={preview.get('assignee')} "
+                   f"(query={kwargs.get('assignee')!r})\n"
                    f"  release={kwargs['release']}  keys={kwargs['include_keys']}\n"
                    f"  would change {len(preview['selected'])} tickets: "
                    f"{', '.join(preview['selected'][:30])}"
@@ -939,16 +947,22 @@ TOOLS = [
          "profile": {"type": "string"}}, "required": ["profile"]}},
     {"name": "reclassify_cve",
      "description": "Move OSV tickets for a CVE to a target status with a comment "
-                    "(and optionally clear fields). dry_run=true previews; "
-                    "dry_run=false requires human approval and actually writes. "
-                    "IMPORTANT: when the user scoped the request to a release, ALWAYS "
-                    "pass release (e.g. '3.2.3.6') so tickets from other releases are "
-                    "NOT touched. Use include_keys to pin exact OSV keys for the "
-                    "tightest scope.",
+                    "(and optionally clear fields). ALWAYS assigns the ticket "
+                    "(required for Jira workflow transitions). Pass assignee="
+                    "'senthil.kumar' (email, display name, or accountId) to pick "
+                    "who; default is CVE_ASSIGNEE_ACCOUNT_ID / profile default. "
+                    "dry_run=true previews; dry_run=false requires human approval "
+                    "and actually writes. IMPORTANT: when the user scoped the "
+                    "request to a release, ALWAYS pass release (e.g. '3.2.3.6') so "
+                    "tickets from other releases are NOT touched. Use include_keys "
+                    "to pin exact OSV keys for the tightest scope.",
      "input_schema": {"type": "object", "properties": {
          "cve_id": {"type": "string"},
          "to_status": {"type": "string", "description": 'e.g. "Closed" or "Exception Request"'},
          "comment": {"type": "string"},
+         "assignee": {"type": "string", "description": "Jira user to assign: accountId, "
+                      "email, or display/login name (e.g. 'senthil.kumar'). "
+                      "Looked up via Jira user search. Defaults to profile assignee."},
          "exception_reason": {"type": "string", "enum": ["Deferred", "Not Exploitable",
                               "Spark Transitive"], "description": "REQUIRED workflow field "
                               "value when to_status is 'Exception Request' (default Deferred)"},

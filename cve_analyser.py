@@ -71,8 +71,99 @@ else:
     BUILT_JAR_PREFIXES = tuple(
         p.lower() for p in (PROFILE.get("built_jar_prefixes") or ("spark-",)))
 
-# Account that exception-deferred tickets get assigned to
-ASSIGNEE_ACCOUNT_ID = cve_profiles.ASSIGNEE_ACCOUNT_ID
+# Default account that exception/closed tickets get assigned to (override via
+# CVE_ASSIGNEE_ACCOUNT_ID env, or pass assignee= to reclassify / close helpers).
+ASSIGNEE_ACCOUNT_ID = (
+    os.environ.get("CVE_ASSIGNEE_ACCOUNT_ID", "").strip()
+    or cve_profiles.ASSIGNEE_ACCOUNT_ID
+)
+
+# Optional display-name / email / login shortcuts → Atlassian accountId.
+# Extend via CVE_ASSIGNEE_MAP="senthil.kumar=712020:...,alice=712020:..."
+_ASSIGNEE_ALIASES: Dict[str, str] = {
+    # Populate known TeamODP people here; or set CVE_ASSIGNEE_MAP / look up live.
+}
+
+
+def _load_assignee_aliases() -> Dict[str, str]:
+    out = dict(_ASSIGNEE_ALIASES)
+    raw = os.environ.get("CVE_ASSIGNEE_MAP", "").strip()
+    for part in raw.split(","):
+        part = part.strip()
+        if "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        if k.strip() and v.strip():
+            out[k.strip().lower()] = v.strip()
+    return out
+
+
+def resolve_assignee(query: Optional[str] = None) -> Optional[str]:
+    """Resolve a human name / email / accountId to a Jira accountId.
+
+    Accepts:
+      - bare Atlassian accountId (contains ':')
+      - alias from CVE_ASSIGNEE_MAP / _ASSIGNEE_ALIASES
+      - email or displayName looked up via Jira user search API
+
+    Returns None if query is empty (caller should use ASSIGNEE_ACCOUNT_ID).
+    Raises ValueError if a non-empty query cannot be resolved.
+    """
+    q = (query or "").strip()
+    if not q:
+        return None
+    if ":" in q and " " not in q:
+        return q  # already an accountId
+    aliases = _load_assignee_aliases()
+    key = q.lower().replace(" ", ".")
+    if key in aliases:
+        return aliases[key]
+    if q.lower() in aliases:
+        return aliases[q.lower()]
+
+    # Live Jira user search
+    url = (f"{JIRA_BASE_URL}/rest/api/3/user/search"
+           f"?query={urllib.parse.quote(q)}&maxResults=10")
+    r = SESSION.get(url, headers={"Accept": "application/json"},
+                    auth=(EMAIL, API_TOKEN))
+    if r.status_code != 200:
+        raise ValueError(f"Jira user search failed [{r.status_code}]: {r.text[:200]}")
+    users = r.json() or []
+    if not users:
+        raise ValueError(f"No Jira user matched {q!r}. "
+                         f"Pass accountId or set CVE_ASSIGNEE_MAP.")
+    # Prefer exact email / displayName / publicName match
+    q_l = q.lower()
+    for u in users:
+        email = (u.get("emailAddress") or "").lower()
+        disp = (u.get("displayName") or "").lower()
+        name = (u.get("name") or "").lower()
+        if q_l in (email, disp, name) or email.startswith(q_l):
+            return u["accountId"]
+    # Single unambiguous result
+    if len(users) == 1:
+        return users[0]["accountId"]
+    choices = ", ".join(
+        f"{u.get('displayName')} <{u.get('emailAddress') or '?'}> = {u['accountId']}"
+        for u in users[:5])
+    raise ValueError(f"Ambiguous assignee {q!r}. Candidates: {choices}")
+
+
+def assign_issue(issue_key: str, account_id: Optional[str] = None) -> bool:
+    """Assign a ticket to account_id (default ASSIGNEE_ACCOUNT_ID). Respects DRY_RUN."""
+    aid = account_id or ASSIGNEE_ACCOUNT_ID
+    if DRY_RUN:
+        print(f"    [DRY_RUN] Would assign {issue_key} -> {aid}")
+        return True
+    url = f"{JIRA_BASE_URL}/rest/api/3/issue/{issue_key}"
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    payload = {"fields": {"assignee": {"accountId": aid}}}
+    response = SESSION.put(url, headers=headers, auth=(EMAIL, API_TOKEN), json=payload)
+    if response.status_code in (200, 204):
+        print(f"    Assigned {issue_key} -> {aid}")
+        return True
+    print(f"    ERROR assigning {issue_key} [{response.status_code}]: {response.text}")
+    return False
 
 # Status that matching tickets are transitioned to
 EXCEPTION_STATUS = "Exception Request"
@@ -465,31 +556,32 @@ def add_comment(issue_key: str, text: str) -> bool:
 
 
 def close_ticket_with_comment(issue_key: str, comment: str,
-                              status: str = "Closed") -> bool:
+                              status: str = "Closed",
+                              assignee: Optional[str] = None) -> bool:
     """
     Assign the ticket, add `comment`, then transition it to `status`
     (default "Closed"). Used when a CVE is fixed elsewhere (e.g. a Hadoop
     commit) and the Spark2 ticket should just be closed with a reference.
-    Respects DRY_RUN.
+    ``assignee`` may be an accountId, email, or display name (resolved via
+    resolve_assignee). Respects DRY_RUN.
     """
-    if not DRY_RUN:
-        url = f"{JIRA_BASE_URL}/rest/api/3/issue/{issue_key}"
-        headers = {"Accept": "application/json", "Content-Type": "application/json"}
-        payload = {"fields": {"assignee": {"accountId": ASSIGNEE_ACCOUNT_ID}}}
-        response = SESSION.put(url, headers=headers, auth=(EMAIL, API_TOKEN), json=payload)
-        if response.status_code not in (200, 204):
-            print(f"    ERROR assigning {issue_key} [{response.status_code}]: {response.text}")
+    aid = None
+    if assignee:
+        try:
+            aid = resolve_assignee(assignee)
+        except ValueError as e:
+            print(f"    ERROR resolving assignee {assignee!r}: {e}")
             return False
-        print(f"    Assigned {issue_key}")
-    else:
-        print(f"    [DRY_RUN] Would assign {issue_key}")
+    if not assign_issue(issue_key, aid):
+        return False
 
     add_comment(issue_key, comment)
     return transition_issue(issue_key, status)
 
 
 def update_ticket_exception(issue_key: str, description: str,
-                            reason: str = "Deferred") -> bool:
+                            reason: str = "Deferred",
+                            assignee: Optional[str] = None) -> bool:
     """
     Assign the ticket, set the CVE-Exception-Reason (default "Deferred") and the
     CVE-Transition-Details description, then move it to the Exception Request
@@ -497,9 +589,18 @@ def update_ticket_exception(issue_key: str, description: str,
     Respects the DRY_RUN flag.
     Returns True on success (or in dry-run mode), False otherwise.
     """
+    aid = ASSIGNEE_ACCOUNT_ID
+    if assignee:
+        try:
+            resolved = resolve_assignee(assignee)
+            if resolved:
+                aid = resolved
+        except ValueError as e:
+            print(f"    ERROR resolving assignee {assignee!r}: {e}")
+            return False
     payload = {
         "fields": {
-            "assignee": {"accountId": ASSIGNEE_ACCOUNT_ID},
+            "assignee": {"accountId": aid},
             "customfield_10885": {  # CVE-Transition-Details
                 "version": 1,
                 "type": "doc",

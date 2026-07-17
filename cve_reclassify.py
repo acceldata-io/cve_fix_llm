@@ -72,21 +72,9 @@ def find_cve_tickets(cve_id: str,
     return out
 
 
-def _assign(key: str) -> bool:
+def _assign(key: str, account_id: Optional[str] = None) -> bool:
     """Assign the ticket so status-specific transitions become available."""
-    if ca.DRY_RUN:
-        print(f"    [DRY_RUN] would assign {key}")
-        return True
-    url = f"{ca.JIRA_BASE_URL}/rest/api/3/issue/{key}"
-    r = ca.SESSION.put(url, headers={"Accept": "application/json",
-                                     "Content-Type": "application/json"},
-                       auth=(ca.EMAIL, ca.API_TOKEN),
-                       json={"fields": {"assignee": {"accountId": ca.ASSIGNEE_ACCOUNT_ID}}})
-    if r.status_code in (200, 204):
-        print(f"    assigned {key}")
-        return True
-    print(f"    ERROR assigning {key} [{r.status_code}]: {r.text[:200]}")
-    return False
+    return ca.assign_issue(key, account_id)
 
 
 def _clear_field(key: str, field_id: str) -> bool:
@@ -117,7 +105,8 @@ def reclassify(cve_id: str,
                include_keys: Optional[List[str]] = None,
                exception_reason: str = "Deferred",
                transition_details: Optional[str] = None,
-               dry_run: bool = True) -> Dict:
+               dry_run: bool = True,
+               assignee: Optional[str] = None) -> Dict:
     """
     Move every matching CVE ticket to `to_status`, adding `comment` and clearing
     `clear_fields`. Returns a summary dict. Honors dry_run (sets ca.DRY_RUN).
@@ -132,6 +121,8 @@ def reclassify(cve_id: str,
       only_statuses  : only act on tickets currently in one of these statuses
       skip_statuses  : never touch tickets in these statuses
                        (defaults to {to_status} + {"Closed"} to stay idempotent)
+      assignee       : optional Jira user (accountId, email, or display name).
+                       Defaults to ca.ASSIGNEE_ACCOUNT_ID / CVE_ASSIGNEE_ACCOUNT_ID.
     """
     ca.DRY_RUN = dry_run
     include_repos = include_repos or []
@@ -140,6 +131,18 @@ def reclassify(cve_id: str,
     include_keys = set(include_keys) if include_keys else None
     skip = set(skip_statuses) if skip_statuses is not None else set(TERMINAL_DEFAULT_SKIP)
     skip.add(to_status)
+
+    assignee_id = None
+    if assignee:
+        try:
+            assignee_id = ca.resolve_assignee(assignee)
+        except ValueError as e:
+            print(f"ERROR: cannot resolve assignee {assignee!r}: {e}")
+            return {
+                "cve": cve_id, "to_status": to_status, "dry_run": dry_run,
+                "error": str(e), "ok": 0, "fail": 0, "selected": [],
+            }
+    # None → assign_issue / update_ticket_exception use default ASSIGNEE_ACCOUNT_ID
 
     tickets = find_cve_tickets(cve_id, release=release)
     selected, skipped = [], []
@@ -162,6 +165,8 @@ def reclassify(cve_id: str,
     print(f"\n{'='*80}")
     print(f"  RECLASSIFY {cve_id} -> {to_status}   (dry_run={dry_run})"
           + (f"  release~{release}" if release else ""))
+    print(f"  assignee={assignee_id or ca.ASSIGNEE_ACCOUNT_ID}"
+          + (f"  (from {assignee!r})" if assignee else "  (default)"))
     print(f"  total tickets={len(tickets)}  selected={len(selected)}  skipped={len(skipped)}")
     print(f"{'='*80}")
 
@@ -179,12 +184,13 @@ def reclassify(cve_id: str,
             details = transition_details or comment or f"Exception ({exception_reason})"
             for fld in clear_fields:
                 _clear_field(key, fld)
-            if ca.update_ticket_exception(key, details, reason=exception_reason):
+            if ca.update_ticket_exception(key, details, reason=exception_reason,
+                                          assignee=assignee_id or assignee):
                 ok += 1
             else:
                 fail += 1
             continue
-        if not _assign(key):
+        if not _assign(key, assignee_id):
             fail += 1; continue
         if comment:
             ca.add_comment(key, comment)
@@ -199,6 +205,8 @@ def reclassify(cve_id: str,
     return {
         "cve": cve_id, "to_status": to_status, "dry_run": dry_run,
         "release": release,
+        "assignee": assignee_id or ca.ASSIGNEE_ACCOUNT_ID,
+        "assignee_query": assignee,
         "exception_reason": exception_reason if is_exception else None,
         "total": len(tickets),
         "selected": [f"{t['key']}({t.get('release','')})" for t in selected],
@@ -229,6 +237,9 @@ def _main():
                     help="CVE-Exception-Reason (only used when --to 'Exception Request')")
     ap.add_argument("--transition-details", default=None, dest="transition_details",
                     help="CVE-Transition-Details text (defaults to --comment)")
+    ap.add_argument("--assignee", default=None,
+                    help="Jira assignee: accountId, email, or display name "
+                         "(default: CVE_ASSIGNEE_ACCOUNT_ID / profile default)")
     grp = ap.add_mutually_exclusive_group()
     grp.add_argument("--dry-run", dest="dry_run", action="store_true", default=True)
     grp.add_argument("--apply", dest="dry_run", action="store_false")
@@ -236,7 +247,7 @@ def _main():
     reclassify(a.cve, a.to_status, a.comment, a.include_repos, a.exclude_repos,
                a.only_statuses, a.clear_fields, a.skip_statuses,
                a.release, a.include_keys, a.exception_reason,
-               a.transition_details, a.dry_run)
+               a.transition_details, a.dry_run, assignee=a.assignee)
 
 
 if __name__ == "__main__":
