@@ -188,33 +188,45 @@ flowchart LR
 
 ## 6. Exception Request Rules
 
-Every exception is recorded with **CVE-Exception-Reason = `Deferred`** and a specific **CVE-Transition-Details** justification. The trigger determines the wording. These are the rules applied to date (candidates for a fully codified rules engine):
+Every exception is recorded with **CVE-Exception-Reason = `Deferred`** and a specific **CVE-Transition-Details** justification.
+
+**Source of truth for next-release reuse:** `cve_remediation_catalog.py`
+- `COMMON_EXCEPTION_RULES` — shared templates (libthrift, jetty-9.4, hadoop-platform, …)
+- `COMPONENT_CATALOG[<name>].exception_rules` — per-component match→reason lists
+- Empty profile lists in `cve_profiles.py` are filled from this catalog on import
+
+Inspect:
+
+```bash
+python3 cve_remediation_catalog.py odp-ambari
+python3 cve_remediation_catalog.py zeppelin
+```
+
+### 6.1 Generic categories (R1–R9)
 
 | ID | Rule | Trigger | Example(s) |
 |----|------|---------|-----------|
-| **R1** | Shaded/bundled in a third-party fat jar | vulnerable lib repackaged inside `*-all.jar` / `*-shaded.jar`; not independently upgradable | trino: guava-in-`clickhouse-jdbc-all`, jackson/commons-codec-in-`gcs-connector-shaded`, `grpc-netty-shaded`; sqoop: jackson-in-`parquet-jackson` |
-| **R2** | Transitive dep owned by another component | lib pulled from & versioned by another ODP component | trino: `kafka-clients`→Kafka, `ranger-plugins-common`→Ranger, `zookeeper`→ZooKeeper |
-| **R3** | Fix only in a breaking/incompatible major | only fixed release is a major with breaking API changes | `libthrift 0.21→0.23` (breaks Hive/Pinot), `trino-iceberg 472→480`, `opentelemetry 1.47→1.62`, jetty 9.4.x→12 |
-| **R4** | No upstream fix (fix = open / EOL) | no patched release exists, or EOL library | trino: `wire-runtime-jvm`, `commons-lang 2.6` |
-| **R5** | Vendor driver / third-party connector dep | version controlled by a vendor driver/connector release | trino: `snowflake-jdbc`, `logback` (Vertica), `commons-configuration2` (Ranger/Pinot) |
-| **R6** | Base-image / OS binary (image scan) | Twistlock **image** finding, no matching source in repo | trino: Go-stdlib CVEs (`crypto/tls`, `x509`, `net`, `net/http`, `net/url`) |
+| **R1** | Shaded/bundled in a third-party fat jar | vulnerable lib repackaged inside `*-all.jar` / `*-shaded.jar`; not independently upgradable | Netty in `aws-java-sdk-bundle`; guava in `clickhouse-jdbc-all` |
+| **R2** | Transitive / vendor / platform-owned | lib versioned by another ODP component or vendor distro | ambari-infra-solr; hadoop-hdfs; ranger-plugins |
+| **R3** | Fix only in a breaking/incompatible major | only fixed release is a major with breaking API changes | `libthrift 0.16→0.23`, Jetty 9→12, Flask 2→3, pyarrow 17→23 |
+| **R4** | No upstream fix (fix = open / EOL) | no patched release exists, or EOL library | `commons-lang 2.6`, `jackson-mapper-asl 1.9`, `wire-runtime` |
+| **R5** | Vendor driver / connector / prebuilt jar | version controlled by vendor or prebuilt stack hook | snowflake-jdbc; fast-hdfs-resource.jar |
+| **R6** | Base-image / OS binary (image scan) | Twistlock **image** finding, no matching source in repo | trino Go-stdlib (`crypto/tls`, `x509`, `net/http`) |
 | **R7** | Known third-party library by path (codified) | CVE-Path matches a known third-party jar pattern | `htrace-core*.jar` (in `CVE_PATH_RULES`) |
-| **R8** | Component-level policy exception | business decision not to fix a component | spark2 — "We are not considering spark2 CVE fixes…" |
-| **R9** | Environment / compatibility constraint | the only patched version requires an incompatible **JDK / Python / OS / base-image** (or breaks ABI for same-component dependents) | fix needs Java 11+ on a JDK 8 component (nifi/ranger/oozie); Python package drops the shipped interpreter; OS/base-image-owned finding → base-image refresh. Maps to the Jira **"Backward Compatibility Constraint"** status. |
-
-**Codified component rules (in `cve_profiles.py`)** additionally include: `protobuf` (cross-Hive/Spark change), `jackson-mapper-asl` (1.9.13 is latest 1.x), `libthrift` (cross-ODP), netty `3.10.x` (no fix in 3.x), netty `4.1.130` shaded in `aws-java-sdk-bundle`.
+| **R8** | Component-level policy exception | business decision not to fix a component | spark2 policy (where applied) |
+| **R9** | Environment / compatibility constraint | patched version needs incompatible JDK/Python/ABI | Spring Security 6.5 on Framework 6.0-only Ambari; cryptography 46.x |
 
 ### For contrast — CLOSE rules (not exceptions)
 - **C1 Fixed at the owning component** — e.g. "Fixed in Hadoop; Commit: `<url>`".
-- **C2 Already fixed on the target branch** — e.g. trino netty already `4.1.133.Final` on 3.2.3.7-2.
-- **C3 Fixed via our own PR** — e.g. trino jetty/aircompressor PRs.
+- **C2 Already fixed on the target branch**.
+- **C3 Fixed via our own PR**.
 
 ---
 
-## 7. Libraries Bumped per Component
+## 7. Libraries Bumped per Component (`fix_targets`)
 
-### 7.1 Standard ODP-aligned versions (applied across Hadoop / Hive / Spark lines)
-These are the platform-aligned target versions the fixer bumps to (source: `cve_profiles.py`):
+### 7.1 Standard ODP-aligned versions (Hadoop / Hive / Spark lines)
+Platform defaults in `cve_profiles._ODP_ALIGNED_BASE`:
 
 | Library | Target version | Library | Target version |
 |---|---|---|---|
@@ -228,22 +240,55 @@ These are the platform-aligned target versions the fixer bumps to (source: `cve_
 | dnsjava | 3.6.0 | libthrift | 0.16.0 |
 | hadoop-thirdparty | 1.4.0 | | |
 
-Spark3 additionally aligns: `lz4-java 1.8.1`, `jdom2 2.0.6.1`, `aircompressor 2.0.3`, `okio 1.17.6`.
+Spark3 extras: `lz4-java 1.8.1`, `jdom2 2.0.6.1`, `aircompressor 2.0.3`, `okio 1.17.6`.
 
-### 7.2 Concrete remediations delivered (Trino, release 3.2.3.6 → branch nightly/ODP-3.2.3.7-2)
+### 7.2 Per-component fix_targets (catalog)
 
-| PR | Library bump | Fixes | Tickets |
-|----|-------------|-------|---------|
-| #46 | jetty **12.0.22 → 12.0.33** | CVE-2026-2332, CVE-2026-1605, CVE-2025-11143, CVE-2025-5115 | 10 |
-| #47 | aircompressor **2.0.2 → 2.0.3** | CVE-2025-67721 | 2 |
-| #48 | netty-bom **4.1.133 → 4.1.135.Final** | proactive hardening | (netty family) |
+**Source of truth:** `COMPONENT_CATALOG[*].fix_targets` in `cve_remediation_catalog.py`
+(also applied into empty `PROFILES[*].fix_targets`).
 
-### 7.3 Representative resolution mix (per component)
-- **Trino (64):** 23 closed (11 netty already-on-target + 12 via PRs), 41 exception (libthrift/Hive, connector-shaded, platform-owned, Go base-image), 0 To Do.
-- **Sqoop:** predominantly transitive → close ("fixed in Hadoop") + exception (shaded/jetty-9.4.x); no sqoop-owned bumps required.
-- **Spark2 (141):** policy exception (R8) — all moved to Exception Request (Deferred).
+```bash
+python3 cve_remediation_catalog.py table    # full markdown matrix
+```
 
-> The methodology produces a per-component "libraries bumped" list automatically as a by-product of the FIX path; the table in §7.1 is the canonical target set.
+| Component | Representative bumps |
+|---|---|
+| **odp-ambari** | netty→4.1.135.Final, spring→6.2.19, spring-security→6.0.8, jackson→2.18.6, mina→2.0.28, postgres→42.7.13, logback→1.3.16 |
+| **clickhouse** | tomcat→9.0.119, jackson-bom→2.18.6, logback→1.5.37, spring→5.3.39 |
+| **zeppelin** | jackson→2.18.6, netty→4.1.133.Final, lang3→3.18.0, nimbus→10.0.2, … |
+| **jupyterhub / hue / superset** | Python pins (urllib3 2.7.0, PyJWT 2.12.0, cryptography 44.x, …) |
+| **pinot** | netty→4.1.135.Final, log4j→2.25.4, helix→1.3.0, nimbus→10.0.2, … |
+| **druid / tez / impala / ranger / kudu** | See catalog |
+| **spark3 / livy / hbase-connectors** | Hand-tuned in `cve_profiles.py` (mirrored in catalog) |
+
+### 7.3 Next-release usage
+
+When a **new scan** lands (e.g. ODP `3.3.6.5`, Ambari `3.0.0.2`), fix versions in
+Jira will often be higher than the catalog. Refresh rules from analysis:
+
+```bash
+# 1) Deterministic FIX/EXCEPTION + per-lib current→target (writes reports/full_analysis_*.json)
+python3 cve_agent.py --full-analysis 3.3.6.5
+# Ambari-only:
+python3 cve_agent.py --full-analysis 3.0.0.2 --components ambari
+
+# 2) Diff analysis targets vs catalog; apply bumps into cve_catalog_overrides.json
+python3 cve_agent.py --sync-catalog 3.3.6.5            # dry-run
+python3 cve_agent.py --sync-catalog 3.3.6.5 --apply
+
+# 3) Remediations use updated profile target_versions
+CVE_PROFILE=odp-ambari CVE_RELEASE=3.0.0.2 python3 cve_fixer.py
+```
+
+| Step | What updates |
+|------|----------------|
+| `--full-analysis` | `reports/full_analysis_<rel>.json` — FIX vs EXCEPTION, `target_version` per ticket |
+| `--sync-catalog --apply` | `cve_catalog_overrides.json` — bumps existing `fix_targets` versions; lists **NEW** families that still need a manual patch stanza in the catalog |
+| Profile import | Overrides merge into `PROFILES[*].fix_targets` / `aligned_versions` |
+
+Also update profile `release` / `target_branch` when the git baseline changes
+(e.g. Ambari `rel/ODP-AMBARI-3.0.0.2-1` → next branch) — that remains a small
+manual profile edit.
 
 ---
 
@@ -293,7 +338,8 @@ flowchart TD
 | File | Role | Key functions / notes |
 |------|------|-----------------------|
 | `cve_analyser.py` | **Jira + facts layer** | Authenticated Jira session; fetch tickets via JQL (paginated); extract CVE-ID / library / versions / path; `transition_issue`, `add_comment`, `close_ticket_with_comment`, `update_ticket_exception`; `CVE_PATH_RULES` + `match_path_rule`. All writes respect `DRY_RUN`. |
-| `cve_profiles.py` | **Per-component configuration** | One profile per component/line: Jira `repo`/`release`, `git_url`/`target_branch`/`pom_path`, `java_home`/`build_cmd`, ODP-aligned versions & `fix_targets`, and routing rule lists (`exception_rules`, `close_rules`, `shaded_bundle_rules`). Selected via `CVE_PROFILE`. |
+| `cve_profiles.py` | **Per-component configuration** | One profile per component/line: Jira `repo`/`release`, `git_url`/`target_branch`/`pom_path`, `java_home`/`build_cmd`, ODP-aligned versions & `fix_targets`, and routing rule lists (`exception_rules`, `close_rules`, `shaded_bundle_rules`). Selected via `CVE_PROFILE`. Empty rule lists are filled from `cve_remediation_catalog.py`. |
+| `cve_remediation_catalog.py` | **Unified fix + exception catalog** | `COMMON_EXCEPTION_RULES` + per-component `fix_targets` / `exception_rules` from delivered remediations (Ambari, batch9–14, pinot, …). CLI: `python3 cve_remediation_catalog.py [component\|table]`. |
 | `cve_fixer.py` | **Maven fix driver** | For each fix target: fetch+group tickets, pick target version, clone/refresh repo, **skip-if-already-fixed**, create branch (named by OSV id), patch pom, build, commit+push. `APPLY=False` by default (plan only). |
 | `cve_reclassify.py` | **Cross-component reclassify (Tier 0)** | Reusable module + CLI to close/except a CVE across components with a comment, scoped by repo/release/keys. Used directly and as an agent tool. |
 | `cve_agent.py` | **LLM agent orchestrator (Tier 1/2)** | Anthropic Messages API loop; exposes the scripts as tools (query, reclassify, apply, read/list repo, write file, run shell); **session persistence** with self-healing history; **prompt caching**; HITL approval; cost accounting. |

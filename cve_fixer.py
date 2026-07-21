@@ -232,10 +232,20 @@ def build_fix_plan(target: Dict, lib_map: Dict[str, List[Dict]]) -> Optional[Dic
             all_versions.extend(split_fix_versions(iss["fixed_version"]))
 
     pure_max = pick_max_version(all_versions)
-    aligned = ODP_ALIGNED_VERSIONS.get(target["aligned_key"])
-    # ODP alignment wins over pure-max so Spark stays in sync with the platform.
+    aligned = None
+    selection = "pure-max"
+    if target.get("aligned_key"):
+        aligned = ODP_ALIGNED_VERSIONS.get(target["aligned_key"])
+        if aligned:
+            selection = "ODP-aligned"
+    # Catalog / release-override target_version (from cve_catalog_sync --apply)
+    if not aligned and target.get("target_version"):
+        aligned = target["target_version"]
+        selection = "catalog-target"
+    # ODP alignment / catalog wins over pure-max so components stay consistent.
     version = aligned or pure_max
-    selection = "ODP-aligned" if aligned else "pure-max"
+    if not aligned:
+        selection = "pure-max"
 
     # First OSV id (issues are already ordered "created DESC" from the fetch)
     branch_ticket = issues[0]["key"] if issues else None

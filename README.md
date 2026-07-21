@@ -16,7 +16,9 @@ tools, scoped strictly per release, with a human approval gate on every write.
 | `cve_cost_tracker.py` | Per-component / per-phase token & cost ledger (`reports/component_costs.json`); shown after `--address` and via `--cost-report`. |
 | `cve_analyser.py` | Jira API layer — query tickets, transition status, set exception reason / transition details. |
 | `cve_fixer.py` | Maven-based fixer — clone/patch pom, build, commit, push, open PR. Includes the rule engine (exception / close / shaded-bundle / environment R9). |
-| `cve_profiles.py` | Per-component profiles (repo, branch, build cmd, JDK, rules) + `profile_env()`. |
+| `cve_profiles.py` | Per-component profiles (repo, branch, build cmd, JDK, rules) + `profile_env()`. Empty rule lists filled from catalog. |
+| `cve_remediation_catalog.py` | **Unified** `fix_targets` + `exception_rules` per component (next-release source of truth). |
+| `cve_catalog_sync.py` | Sync catalog/`fix_targets` from `--full-analysis` JSON (new release fix versions). |
 | `cve_reclassify.py` | Reusable CLI to reclassify OSV tickets for a CVE across components. |
 | `audit_versions.py` | Reads configured library versions across component branches. |
 | `cve_version_audit.py` | GitHub pinned lib versions vs `--full-analysis` FIX targets + common bump suggestions. |
@@ -75,6 +77,14 @@ python3 cve_agent.py "Address sqoop CVEs for 3.2.3.6"
 # and cross-component common-version suggestions (e.g. netty 4.1.135 for all).
 python3 cve_agent.py --full-analysis 3.3.6.4
 # equivalent: python3 cve_full_analysis.py 3.3.6.4 --components hadoop hive
+
+# After a NEW release scan: refresh fix_targets from the analysis report
+# (bumps catalog target versions; writes cve_catalog_overrides.json)
+python3 cve_agent.py --sync-catalog 3.3.6.5            # dry-run
+python3 cve_agent.py --sync-catalog 3.3.6.5 --apply
+# Ambari-only example (Jira release 3.0.0.2, repo sehajsandhu/ambari):
+python3 cve_agent.py --full-analysis 3.0.0.2 --components ambari
+python3 cve_agent.py --sync-catalog 3.0.0.2 --components ambari --apply
 
 # Version audit: read pinned libs from GitHub, compare with analysis report
 python3 cve_agent.py --version-audit 3.3.6.4 --branch nightly/3.3.6.5

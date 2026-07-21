@@ -2,25 +2,30 @@
 Build-target profiles for the CVE analyser / fixer.
 
 A single profile bundles everything that differs between the components we patch
-(spark2, and the spark3 lines 3.5.5 / 3.5.1 / 3.3.3):
+(spark2, spark3 lines, livy, pinot, ambari, python apps, …):
 
   Jira side   : repo (cve-repo filter), release (cve-found-in-release-version).
   Git/build   : git_url, target_branch, pom_path, java_home, build_cmd.
   Fix logic   : aligned_versions, fix_targets.
   Routing     : exception_rules, close_rules, shaded_bundle_rules.
 
+**Unified remediation catalog** (`cve_remediation_catalog.py`) holds the
+per-component fix_targets + exception_rules learned from prior release runs
+(batch9–14, Ambari, Pinot, …). Empty profile rule lists are filled from that
+catalog at import time; hand-tuned spark2/spark3/livy/pinot lists are kept.
+
 Select the active profile with the CVE_PROFILE environment variable, e.g.:
 
     CVE_PROFILE=spark3-3.5.5 python3 cve_fixer.py
+    CVE_PROFILE=odp-ambari python3 cve_fixer.py
 
 Defaults to "spark2" so existing spark2 runs are unchanged.
 
-NOTE on spark3 git/build fields: the Jira-side automation (analyse, exception,
-close, shaded routing) works immediately for spark3 because it only needs
-`repo` + `release` + the rule lists. The build/commit/push fix flow additionally
-needs the real git_url / target_branch / build_cmd / java_home for each spark3
-version -- those are marked "VERIFY" below; confirm them before running with
-APPLY=True for a spark3 profile.
+Inspect the catalog:
+
+    python3 cve_remediation_catalog.py              # all components
+    python3 cve_remediation_catalog.py odp-ambari    # one component
+    python3 cve_remediation_catalog.py table         # markdown fix_targets table
 """
 
 import os
@@ -1744,3 +1749,95 @@ _NEW_PROFILES_326.update({
 
 # Register the new profiles into the master table.
 PROFILES.update(_NEW_PROFILES_326)
+
+# ---------- Profiles delivered in 3.3.6.4 / Ambari 3.0.0.1 remediations ----------
+PROFILES.update({
+    "odp-ambari": {
+        "repo": "sehajsandhu/ambari",
+        "release": "3.0.0.1",
+        "git_url": "https://github.com/acceldata-io/odp-ambari.git",
+        "target_branch": "rel/ODP-AMBARI-3.0.0.2-1",
+        "workdir": "~/cve_fix_workdir/odp-ambari",
+        "pom_path": "ambari-project/pom.xml",
+        "java_home": _first_existing(
+            os.environ.get("CVE_JAVA_HOME_17"),
+            "/usr/lib/jvm/java-17-openjdk",
+            "/usr/lib/jvm/java-17",
+        ) or _JDK11,
+        "jdk_version": 17,
+        "build_cmd": (
+            "mvn -q -N -f ambari-project/pom.xml validate "
+            "-DskipTests -Dcheckstyle.skip=true -Drat.skip=true"
+        ),
+        "aligned_versions": {},
+        "fix_targets": [],
+        "exception_rules": [],
+        "close_rules": [],
+        "shaded_bundle_rules": [],
+    },
+    "superset": _skeleton(
+        repo="sehajsandhu/superset",
+        release="3.3.6.4",
+        git_url="https://github.com/acceldata-io/superset.git",
+        target_branch="rel/ODP-3.3.6.4-1",
+        workdir="~/cve_fix_workdir/superset",
+        build_tool="python",
+        pom_path=None,
+        version_files=["requirements/base.txt", "pyproject.toml"],
+        java_home=None,
+        build_cmd=None,
+    ),
+    "livy4": _skeleton(
+        repo="sehajsandhu/livy4",
+        release="3.3.6.4",
+        git_url="https://github.com/acceldata-io/livy.git",
+        target_branch="nightly/ODP-4.1.1.3.3.6.5",
+        workdir="~/cve_fix_workdir/livy4",
+        pom_path="pom.xml",
+        java_home=_JDK11,
+        build_cmd=("mvn -DskipTests -Dmaven.test.skip=true clean package"),
+    ),
+    "spark4": _skeleton(
+        repo="sehajsandhu/spark4",
+        release="3.3.6.4",
+        git_url="https://github.com/acceldata-io/spark3.git",
+        target_branch="nightly/ODP-4.1.1.3.3.6.5",
+        workdir="~/cve_fix_workdir/spark4",
+        pom_path="pom.xml",
+        java_home=_JDK11,
+        build_cmd=("mvn -DskipTests -Dmaven.test.skip=true clean package"),
+    ),
+    "celeborn": _skeleton(
+        repo="sehajsandhu/celeborn",
+        release="3.3.6.4",
+        git_url="https://github.com/acceldata-io/celeborn.git",
+        target_branch="nightly/ODP-3.3.6.5",
+        workdir="~/cve_fix_workdir/celeborn",
+        pom_path="pom.xml",
+        java_home=_JDK11,
+        build_cmd=("mvn -DskipTests clean package"),
+    ),
+    "trino": _skeleton(
+        repo="sehajsandhu/trino",
+        release="3.2.3.6",
+        git_url="https://github.com/acceldata-io/trino.git",
+        target_branch="nightly/ODP-3.2.3.7-2",
+        workdir="~/cve_fix_workdir/trino",
+        pom_path="pom.xml",
+        java_home=_JDK11,
+        build_cmd=("./mvnw -DskipTests clean package"),
+    ),
+})
+
+# Populate empty fix_targets / exception_rules from the unified catalog so the
+# next release can reuse delivered Ambari/batch9–14 / pinot / etc. decisions.
+# Hand-tuned spark2/spark3/livy/pinot/hbase-connectors lists are preserved
+# (only_empty=True).
+from cve_remediation_catalog import (  # noqa: E402
+    COMPONENT_CATALOG,
+    COMMON_EXCEPTION_RULES,
+    apply_catalog_to_profiles,
+    fix_targets_table,
+)
+
+_CATALOG_FILLED = apply_catalog_to_profiles(PROFILES, only_empty=True)

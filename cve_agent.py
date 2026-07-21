@@ -1354,6 +1354,7 @@ def print_usage() -> None:
 Usage:
   python3 cve_agent.py [goal ...]              interactive agent (needs API key)
   python3 cve_agent.py --full-analysis <rel>   deterministic FIX/EXCEPTION plan
+  python3 cve_agent.py --sync-catalog <rel>    update fix_targets from analysis
   python3 cve_agent.py --version-audit <rel>   GitHub lib versions vs analysis
   python3 cve_agent.py --address <comp>        address one component end-to-end
   python3 cve_agent.py --list-components       list static component catalog
@@ -1370,7 +1371,10 @@ Environment:
   GITHUB_TOKEN / GH_TOKEN    PR creation
 
 Examples:
-  python3 cve_agent.py --full-analysis 3.3.6.4
+  python3 cve_agent.py --full-analysis 3.3.6.5
+  python3 cve_agent.py --sync-catalog 3.3.6.5 --apply
+  python3 cve_agent.py --full-analysis 3.0.0.2 --components ambari
+  python3 cve_agent.py --sync-catalog 3.0.0.2 --components ambari --apply
   python3 cve_agent.py --version-audit 3.3.6.4 --branch nightly/3.3.6.5
   python3 cve_agent.py --address zookeeper --release 3.3.6.4
   python3 check_env.py
@@ -1396,6 +1400,15 @@ def main():
         rest = argv[2:]
         import cve_full_analysis as fa
         return fa.main([release] + rest)
+
+    if argv and argv[0] in ("--sync-catalog", "-S"):
+        # python3 cve_agent.py --sync-catalog 3.3.6.5 [--apply] [--components ambari]
+        if len(argv) < 2 or argv[1].startswith("-"):
+            print("Usage: python3 cve_agent.py --sync-catalog <release> "
+                  "[--apply] [--components COMP ...] [--analysis path]")
+            sys.exit(2)
+        import cve_catalog_sync as cs
+        return cs.main(argv[1:])
 
     if argv and argv[0] in ("--version-audit", "-V"):
         if len(argv) < 2 or argv[1].startswith("-"):

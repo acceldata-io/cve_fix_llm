@@ -219,6 +219,16 @@ HTRACE_EXCEPTION_REASON = (
     "And htrace-core* is a non-active third party library; And hence we require exception"
 )
 
+HBASE_SHADED_CLIENT_EXCEPTION_REASON = (
+    "The vulnerable class is shaded/relocated inside Apache HBase's "
+    "hbase-shaded-client-*.jar fat jar (org.apache.hbase:hbase-shaded-client). "
+    "A component-local library version bump cannot replace the relocated classes "
+    "inside this shaded client artifact. The fix must be made in the platform "
+    "HBase build by updating the dependency and regenerating hbase-shaded-client; "
+    "consuming components only ship that prebuilt jar. Hence Exception Request "
+    "until the platform HBase shaded-client is rebuilt with the patched library."
+)
+
 CVE_PATH_RULES = [
     {
         "patterns": [
@@ -227,6 +237,14 @@ CVE_PATH_RULES = [
         ],
         "library": "htrace",
         "description": HTRACE_EXCEPTION_REASON,
+    },
+    {
+        "patterns": [
+            r"hbase-shaded-client[^/]*\.jar",
+            r"/usr/odp/.*/hbase-shaded-client[^/]*\.jar",
+        ],
+        "library": "hbase-shaded-client",
+        "description": HBASE_SHADED_CLIENT_EXCEPTION_REASON,
     },
 ]
 
@@ -597,11 +615,16 @@ def close_ticket_with_comment(issue_key: str, comment: str,
     commit) and the Spark2 ticket should just be closed with a reference.
     ``assignee`` may be an accountId, email, or display name (resolved via
     resolve_assignee). Respects DRY_RUN.
+
+    Re-assigns after the transition: OSV Close/Exception workflows often clear
+    assignee on status change, which previously left Closed tickets unassigned.
     """
-    aid = None
+    aid = ASSIGNEE_ACCOUNT_ID
     if assignee:
         try:
-            aid = resolve_assignee(assignee)
+            resolved = resolve_assignee(assignee)
+            if resolved:
+                aid = resolved
         except ValueError as e:
             print(f"    ERROR resolving assignee {assignee!r}: {e}")
             return False
@@ -609,7 +632,10 @@ def close_ticket_with_comment(issue_key: str, comment: str,
         return False
 
     add_comment(issue_key, comment)
-    return transition_issue(issue_key, status)
+    if not transition_issue(issue_key, status):
+        return False
+    # Workflow post-functions frequently clear assignee on Close — set again.
+    return assign_issue(issue_key, aid)
 
 
 def update_ticket_exception(issue_key: str, description: str,
@@ -665,7 +691,11 @@ def update_ticket_exception(issue_key: str, description: str,
 
     print(f"    Updated {issue_key} -> {reason} exception (details set)")
     # Assignee is now set, so the Exception Request transition is available.
-    return transition_issue(issue_key, EXCEPTION_STATUS)
+    if not transition_issue(issue_key, EXCEPTION_STATUS):
+        return False
+    # Workflow post-functions frequently clear assignee on Exception Request —
+    # set again so Closed/Exception tickets do not end up unassigned.
+    return assign_issue(issue_key, aid)
 
 
 def apply_path_rules(issues: List[Dict]) -> None:
